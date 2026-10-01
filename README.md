@@ -1,37 +1,37 @@
 # VPS Hardening Automation (`vps_hardening`)
 
-Automação completa e modular de **Hardening para Servidores VPS** recém-criados executando **Ubuntu (20.04/22.04/24.04 LTS)** e **Debian (11/12+)**.
+Comprehensive, modular **VPS Security Hardening** automation tool designed for newly provisioned servers running **Ubuntu (20.04/22.04/24.04 LTS)** and **Debian (11/12+)**.
 
-Aplica as melhores práticas de segurança da indústria para transformar uma VPS padrão exposta à internet em uma máquina fortificada contra bots, ataques de força bruta, spoofing de IP e explorações de memória.
-
----
-
-## ⚡ Funcionalidades (As 7 Fases de Segurança)
-
-- **Fase 1 — Atualização e Sincronização**: Atualização não-interativa do sistema (`apt-get upgrade`), fuso horário definido e sincronização ativa de horário com NTP.
-- **Fase 2 — Gestão Segura de Contas**: Criação de usuário administrativo no grupo `sudo`, neutralização de contas padrões vulneráveis de provedores cloud (`ubuntu`, `debian`, `admin`) e desativação de chaves não autorizadas.
-- **Fase 3 — SSH Hardening & Socket Activation**: Desativação total de login por senha (`PasswordAuthentication no`) e login direto como root (`PermitRootLogin no`), migração para porta alta customizada, resolução do *systemd socket activation* do Ubuntu 22.10/24.04 e testes de sintaxe antes de reiniciar.
-- **Fase 4 — Firewall Restritivo (UFW)**: Política `deny incoming`, liberação da porta SSH personalizada com rate-limit nativo (`ufw limit`) e cobertura para IPv6.
-- **Fase 5 — Proteção contra Brute Force (Fail2ban)**: Criação de `/etc/fail2ban/jail.local` com incrementos progressivos de ban, sub-redes Docker e RFC1918 ignoradas e monitoramento do SSH.
-- **Fase 6 — Kernel Hardening (sysctl)**: Bloqueio de pacotes com Source Routing, ignorar ICMP redirects (anti-MITM), proteção contra SYN Flood (`syncookies`), ASLR máximo (`randomize_va_space = 2`), restrição de ponteiros em `/proc` e `dmesg_restrict`.
-- **Fase 7 — Atualizações Automáticas de Segurança**: Configuração ativa do `unattended-upgrades` para correções contínuas de vulnerabilidades críticas do SO.
+Applies battle-tested production security standards to transform a stock, internet-facing VPS into a resilient system protected against automated botnets, brute-force attacks, IP spoofing, and kernel-level memory exploitation.
 
 ---
 
-## ⚠️ Regras de Ouro (Antes de Começar)
+## ⚡ Key Features (The 7 Security Phases)
+
+- **Phase 1 — Base System & Clock Sync**: Non-interactive system updates (`apt-get upgrade`), timezone configuration, and NTP synchronization.
+- **Phase 2 — Account Security & Cloud Provider Cleanup**: Creation of a dedicated non-root administrative account with `sudo` privileges, lockouts for pre-installed provider accounts (`ubuntu`, `debian`, `admin`), and disabling unverified `authorized_keys`.
+- **Phase 3 — OpenSSH Hardening & Socket Activation**: Complete disablement of password authentication (`PasswordAuthentication no`) and direct root login (`PermitRootLogin no`), migration to a custom high port, resolution of Ubuntu 22.10/24.04 *systemd socket activation* (`ssh.socket`), and syntax verification prior to daemon reload.
+- **Phase 4 — Restrictive Firewall (UFW)**: Default-deny incoming policy (`default deny incoming`), rate-limited SSH access (`ufw limit`) to mitigate scanning, and full IPv6 coverage.
+- **Phase 5 — Brute-Force Mitigation (Fail2ban)**: Customized `/etc/fail2ban/jail.local` configuration featuring progressive ban escalation, systemd backend integration, and whitelisting for Docker containers and RFC1918 subnets.
+- **Phase 6 — Kernel Hardening (sysctl)**: Strict reverse path filtering (anti-spoofing), rejection of ICMP redirects (anti-MITM), SYN flood defense (`tcp_syncookies`), maximum ASLR (`randomize_va_space = 2`), and kernel pointer/dmesg restrictions (`kptr_restrict`, `dmesg_restrict`).
+- **Phase 7 — Automated Security Upgrades**: Automated background security patching via `unattended-upgrades`.
+
+---
+
+## ⚠️ Golden Rules (Read Before Starting)
 
 > [!CAUTION]
-> 1. **Nunca feche a sessão SSH atual** durante a execução do hardening! Se algo falhar, você precisará da sessão aberta para diagnosticar.
-> 2. **Sempre teste a nova conexão em um NOVO terminal** com a chave SSH e o novo usuário antes de encerrar a sessão root.
-> 3. Crie um **snapshot** da VPS no painel do seu provedor (Contabo, Hetzner, DigitalOcean, etc.) antes de iniciar.
+> 1. **Never close your active SSH session** during the hardening process! If an issue occurs, your open session is your lifeline to investigate and resolve it.
+> 2. **Always verify the new connection in a NEW terminal** with your SSH key and credentials before ending the root session.
+> 3. Create a **snapshot / backup** of the VPS in your cloud provider's control panel (Contabo, Hetzner, DigitalOcean, Linode, AWS, etc.) before running security scripts.
 
 ---
 
-## 🚀 Como Executar
+## 🚀 Execution Methods
 
-### 1. Via Git Clone (Recomendado)
+### 1. Via Git Clone (Recommended)
 
-Clone o repositório na VPS e execute o script:
+Clone the repository directly onto the VPS and run:
 
 ```bash
 git clone https://github.com/carlos-hdo/vps_hardening.git
@@ -40,98 +40,98 @@ chmod +x hardening.sh
 sudo ./hardening.sh
 ```
 
-### 2. One-Liner com Argumentos Diretos
+### 2. Direct Execution with Parameters
 
-Você pode passar o usuário, a chave pública e a porta SSH desejada:
+Pass username, public SSH key, and desired SSH port as arguments:
 
 ```bash
-sudo ./hardening.sh operador "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... vps-acesso" 52211
+sudo ./hardening.sh operator "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... vps-access" 52211
 ```
 
-Ou com flags nomeadas:
+Or using named flags:
 
 ```bash
-sudo ./hardening.sh -u operador -k "ssh-ed25519 AAAAC3..." -p 52211 -y
+sudo ./hardening.sh -u operator -k "ssh-ed25519 AAAAC3..." -p 52211 -y
 ```
 
-### 3. Via Pipe Direto (Curl / Web Bootstrap)
+### 3. Via Direct Shell Pipe (Curl / Web Bootstrap)
 
-Se preferir executar diretamente via one-liner remoto:
+To execute remotely without prior cloning:
 
 ```bash
-# Modo Interativo (o script detecta /dev/tty e solicita os dados com segurança)
+# Interactive mode (safely reads inputs from /dev/tty even over pipes):
 curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main/hardening.sh | sudo bash
 
-# Ou passando os parâmetros diretamente:
-curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main/hardening.sh | sudo bash -s -- operador "ssh-ed25519 AAAAC3..." 52211
+# Non-interactive mode with arguments passed through bash:
+curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main/hardening.sh | sudo bash -s -- operator "ssh-ed25519 AAAAC3..." 52211
 ```
 
 ---
 
-## 🛠️ Opções de Linha de Comando
+## 🛠️ Command-Line Options
 
-| Flag | Argumento | Padrão | Descrição |
+| Flag | Argument | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `-u`, `--user` | `<nome>` | `operador` | Nome do novo usuário administrativo |
-| `-k`, `--key` | `"<chave>"` | *(obrigatório)* | Chave pública SSH autorizada (ed25519 / rsa / ecdsa) |
-| `-p`, `--port` | `<número>` | `52211` | Nova porta SSH (faixa 1024 a 65535) |
-| `-t`, `--timezone` | `<região>` | `America/Sao_Paulo` | Fuso horário do sistema |
-| `-y`, `--yes` | Nenhum | `false` | Pula a tela de confirmação inicial |
-| `-h`, `--help` | Nenhum | — | Exibe mensagem de ajuda e opções |
+| `-u`, `--user` | `<username>` | `operator` | Name of the new administrative user |
+| `-k`, `--key` | `"<ssh_key>"` | *(required)* | Authorized OpenSSH public key (`ed25519` / `rsa` / `ecdsa`) |
+| `-p`, `--port` | `<number>` | `52211` | Custom SSH port (range `1024`–`65535`) |
+| `-t`, `--timezone` | `<region>` | `America/Sao_Paulo` | System timezone (e.g. `UTC`, `America/New_York`) |
+| `-y`, `--yes` | None | `false` | Skip interactive plan confirmation prompt |
+| `-h`, `--help` | None | — | Display help message and options |
 
 ---
 
-## 🧪 Verificação Pós-Instalação
+## 🧪 Post-Installation Verification
 
-Após a execução, realize os testes em um **terminal separado**:
+Always verify from an **independent local terminal**:
 
 ```bash
-# 1. Testar acesso com a nova chave e porta
-ssh -p 52211 operador@IP_DA_VPS
+# 1. Test SSH connectivity using your private key and custom port
+ssh -p 52211 operator@VPS_IP_ADDRESS
 
-# 2. Confirmar privilégio sudo
+# 2. Confirm sudo privileges
 sudo whoami
-# Resposta esperada: root
+# Expected output: root
 
-# 3. Travar a senha do root (somente após validar passos 1 e 2)
+# 3. Lock root account password (ONLY after steps 1 & 2 succeed)
 sudo passwd -l root
 ```
 
-### Comandos de Diagnóstico Úteis:
+### Useful Diagnostics:
 
 ```bash
-# Verificar portas em escuta (deve mostrar a porta customizada, não mais a 22)
+# Check active listening ports (sshd should listen on custom port, not 22)
 ss -tunap | grep sshd
 
-# Status do firewall
+# Review firewall status and rules
 sudo ufw status numbered
 
-# Status do fail2ban
+# Inspect fail2ban jail status
 sudo fail2ban-client status sshd
 
-# Desbanir seu próprio IP caso erre chaves consecutivas
-sudo fail2ban-client set sshd unbanip SEU_IP
+# Unban an IP address if inadvertently locked out
+sudo fail2ban-client set sshd unbanip YOUR_IP
 ```
 
 ---
 
-## 📁 Estrutura do Projeto
+## 📁 Repository Layout
 
 ```
 vps_hardening/
-├── hardening.sh           # Script principal de automação e hardening
-├── quick-install.sh       # Script de bootstrap para one-liner e execuções remotas
-├── GUIDE.md               # Guia detalhado de referência técnica (Fases 1 a 7)
-├── README.md              # Documentação e instruções de uso
-├── LICENSE                # Licença MIT
+├── hardening.sh           # Main hardening and automation script
+├── quick-install.sh       # Lightweight bootstrap wrapper for curl / pipelines
+├── GUIDE.md               # Technical in-depth reference guide (Phases 1-7)
+├── README.md              # Documentation and usage guide
+├── LICENSE                # MIT License
 └── configs/
-    ├── 00-hardening.conf  # Template de configuração OpenSSH
-    ├── jail.local         # Template de configuração Fail2ban
-    └── 99-hardening.conf  # Template de parâmetros de segurança sysctl
+    ├── 00-hardening.conf  # OpenSSH hardening template
+    ├── jail.local         # Fail2ban configuration template
+    └── 99-hardening.conf  # Kernel sysctl parameters template
 ```
 
 ---
 
-## 📄 Licença
+## 📄 License
 
-Distribuído sob a licença [MIT](LICENSE).
+Distributed under the [MIT](LICENSE) License.

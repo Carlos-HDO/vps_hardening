@@ -1,8 +1,8 @@
 # /etc/fail2ban/jail.local
-# Template Fail2ban para proteção SSH e servidores cloud
+# Fail2ban configuration template for SSH and cloud servers
 
 [DEFAULT]
-# Redes Docker, localhost e RFC1918 para evitar auto-banimento indevido
+# Whitelist localhost, IPv6 loopback, Docker subnets, and standard private IP ranges
 ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
 bantime = 3600
 findtime = 600
