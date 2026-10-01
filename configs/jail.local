@@ -1,0 +1,22 @@
+# /etc/fail2ban/jail.local
+# Template Fail2ban para proteção SSH e servidores cloud
+
+[DEFAULT]
+# Redes Docker, localhost e RFC1918 para evitar auto-banimento indevido
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+bantime = 3600
+findtime = 600
+maxretry = 4
+bantime.increment = true
+bantime.factor = 2
+bantime.maxtime = 604800
+backend = systemd
+
+[sshd]
+enabled = true
+port = 52211
+filter = sshd
+logpath = %(sshd_log)s
+maxretry = 3
+findtime = 300
+bantime = 7200
