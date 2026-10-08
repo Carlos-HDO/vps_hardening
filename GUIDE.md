@@ -24,8 +24,11 @@
 First command upon logging in as `root`:
 
 ```bash
-apt update && apt upgrade -y
+apt update && apt install -y sudo curl && apt upgrade -y
 ```
+
+> 💡 **Debian Note**: Minimal Debian images (netinst, cloud templates) often lack `sudo` and `curl` out of the box. Installing them upfront prevents script breaks when configuring non-root administrative users.
+
 
 ### 1.2 Configure Timezone and NTP Synchronization
 
@@ -132,6 +135,11 @@ ClientAliveCountMax 2
 
 **Why change the default port?**  
 Port changing is not security by obscurity — port scanners like `nmap` can discover open ports quickly. The true value is **noise reduction**: it eliminates 95%+ of automated bot scans targeted at port 22, keeping your auth logs clean for real anomaly detection. Choose a port between 1024 and 65535, avoiding common alternatives like 2222.
+
+> ⚠️ **OpenSSH Precedence Gotcha (First Match Wins)**:  
+> OpenSSH parses configuration files using a *first-match* evaluation rule: the first directive encountered for any given parameter is the one applied. If `/etc/ssh/sshd_config` contains `Port 22` or `PermitRootLogin yes` before `Include /etc/ssh/sshd_config.d/*.conf`, your drop-in configuration would be silently overridden!  
+> Always sanitize the primary `/etc/ssh/sshd_config` by commenting conflicting directives and ensuring `Include /etc/ssh/sshd_config.d/*.conf` is declared at the top of the file.
+
 
 ### 3.3 Ubuntu Socket Activation Gotcha (Ubuntu 22.10+)
 
@@ -288,12 +296,34 @@ kernel.kptr_restrict = 2
 
 # Restrict dmesg kernel logging to root
 kernel.dmesg_restrict = 1
+
+# Disable core dumps for setuid binaries
+fs.suid_dumpable = 0
+
+# TCP BBR Congestion Control & Fair Queuing (FQ)
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
 ```
 
-Apply immediately:
+> 🚀 **TCP BBR (Bottleneck Bandwidth and RTT)**:  
+> Developed by Google, BBR dynamically computes real-time network throughput and round-trip times to manage packet delivery rather than relying solely on lost packets. Pairing `net.core.default_qdisc = fq` (Fair Queuing) with `bbr` drastically cuts connection latency, mitigates bufferbloat, and boosts throughput across lossy or cross-region connections without affecting security.
+
+> 💡 **Container Environments (LXC / OpenVZ / Docker)**:  
+> Shared-kernel containers share memory subsystems directly with the host machine. In these environments, applying host-level memory directives (`randomize_va_space`, `kptr_restrict`, `dmesg_restrict`) returns `Permission denied`. The automated script automatically detects container environments (`systemd-detect-virt`) and applies a container-optimized profile consisting of supported network stack hardening parameters.
+
+Load module, persist across reboots, and apply immediately:
 
 ```bash
+# Load TCP BBR kernel module and ensure persistence
+modprobe tcp_bbr
+echo "tcp_bbr" > /etc/modules-load.d/bbr.conf
+
+# Reload all sysctl parameters
 sysctl --system
+
+# Verify active congestion control algorithm
+sysctl net.ipv4.tcp_congestion_control
+# Expected output: net.ipv4.tcp_congestion_control = bbr
 ```
 
 ---
@@ -317,9 +347,192 @@ unattended-upgrade --dry-run --debug
 
 ---
 
+## Phase 8 — Filesystem & Shared Memory Protection (CIS Benchmark)
+
+### 8.1 Shared Memory Hardening (`/dev/shm`)
+
+Shared memory (`/dev/shm`) is a world-writable temporary RAM filesystem frequently targeted by threat actors to stage and execute malicious payloads without writing to disk.
+
+Protect `/dev/shm` by adding or updating the mount entry in `/etc/fstab`:
+
+```bash
+# Add or update /dev/shm mount flags
+echo "tmpfs /dev/shm tmpfs defaults,nodev,nosuid,noexec 0 0" >> /etc/fstab
+mount -o remount,nodev,nosuid,noexec /dev/shm
+```
+
+* `nodev`: Prevents device node creation.
+* `nosuid`: Ignores set-user-identifier and set-group-identifier bits.
+* `noexec`: Disallows execution of any binary or script stored in `/dev/shm`.
+
+### 8.2 Disabling Core Dumps
+
+Memory dumps from crashed processes can leak sensitive data (API tokens, database credentials, in-memory private keys) to disk.
+
+Create `/etc/security/limits.d/10-hardening-coredump.conf`:
+
+```ini
+* hard core 0
+* soft core 0
+```
+
+Disable core dumps in systemd via `/etc/systemd/coredump.conf.d/disable.conf`:
+
+```ini
+[Coredump]
+Storage=none
+ProcessSizeMax=0
+```
+
+Together with `fs.suid_dumpable = 0` in sysctl, this completely prohibits unprivileged core memory extraction.
+
+---
+
+## Phase 9 — Kernel Modules Hardening (Legacy Protocols)
+
+Rarely utilized legacy networking protocols (e.g., DCCP, SCTP, RDS, TIPC) and legacy hardware drivers have historically been vectors for local kernel privilege escalation (LPE).
+
+Create `/etc/modprobe.d/hardening.conf`:
+
+```ini
+install dccp /bin/true
+install sctp /bin/true
+install rds /bin/true
+install tipc /bin/true
+install firewire-core /bin/true
+```
+
+Using `install <module> /bin/true` (the standard CIS Benchmark pattern) ensures the Linux kernel executes `/bin/true` instead of loading the module driver, preventing exploitation.
+
+---
+
+## Phase 10 — System Auditing & Intrusion Logging
+
+### 10.1 System Auditing Daemon (`auditd`)
+
+The `auditd` daemon tracks system security events, modifications to critical files (`/etc/passwd`, `/etc/sudoers`), and suspicious administrative executions:
+
+```bash
+apt install auditd -y
+systemctl enable auditd --now
+auditctl -s
+```
+
+### 10.2 Lynis System Security Audit
+
+**Lynis** performs an automated, comprehensive audit across over 300 security controls, calculating an overall Hardening Index:
+
+```bash
+apt install lynis -y
+lynis audit system --quick
+```
+
+Review the audit score and generated recommendations in `/var/log/lynis.log` and `/var/log/lynis-report.dat`.
+
+---
+
+## Phase 11 — Real-Time SSH Login Alerts (Telegram & Webhooks)
+
+Receive immediate mobile notifications whenever an administrator or adversary logs in to the server via SSH.
+
+### 11.1 Telegram Bot Setup (Recommended — Takes ~1 minute)
+
+1. **Create the Telegram Bot**:
+   * Open Telegram and search for `@BotFather`.
+   * Send `/newbot`, enter a friendly name (e.g. `VPS Security Alert`) and a username ending in `bot` (e.g. `my_vps_guard_bot`).
+   * Copy the **HTTP API Token** provided (e.g. `7123456789:ABCdefGhIJKlmNoPQRstuVWXyz`).
+
+2. **Retrieve your Chat ID**:
+   * Search for `@userinfobot` or `@getmyid_bot` in Telegram and send `/start`.
+   * Copy your numeric **Id** (e.g. `123456789`).
+   * Send a test `/start` message to your newly created bot to initialize the conversation.
+
+3. **Verify via Curl (Optional)**:
+   ```bash
+   curl -s -X POST "https://api.telegram.org/bot<YOUR_TOKEN>/sendMessage" \
+     -d "chat_id=<YOUR_CHAT_ID>" \
+     -d "parse_mode=HTML" \
+     --data-urlencode "text=🔔 <b>Test Notification</b> from VPS"
+   ```
+
+### 11.2 Automated Dispatcher (`/usr/local/bin/ssh-login-alert.sh`)
+
+Create `/usr/local/bin/ssh-login-alert.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+TG_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
+TG_CHAT_ID="YOUR_TELEGRAM_CHAT_ID"
+WEBHOOK_URL="YOUR_OPTIONAL_DISCORD_WEBHOOK"
+
+if [ "${PAM_TYPE:-}" = "open_session" ]; then
+  HOST="$(hostname)"
+  USER="${PAM_USER:-unknown}"
+  IP="${PAM_RHOST:-unknown}"
+  DATE="$(date "+%Y-%m-%d %H:%M:%S %Z")"
+
+  # Telegram Bot Alert
+  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+    TG_MSG="🚨 <b>VPS SSH LOGIN ALERT</b>
+━━━━━━━━━━━━━━━━━━
+🖥️ <b>Server:</b> <code>${HOST}</code>
+👤 <b>User:</b> <code>${USER}</code>
+🌐 <b>Remote IP:</b> <code>${IP}</code>
+🕒 <b>Date:</b> <code>${DATE}</code>
+━━━━━━━━━━━━━━━━━━
+⚠️ <i>If this was not you, verify active sessions immediately!</i>"
+
+    curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+      -d "chat_id=${TG_CHAT_ID}" \
+      -d "parse_mode=HTML" \
+      --data-urlencode "text=${TG_MSG}" >/dev/null 2>&1 &
+  fi
+
+  # Optional Discord Webhook
+  if [[ "$WEBHOOK_URL" =~ discord(app)?\.com/api/webhooks ]]; then
+    JSON_PAYLOAD=$(cat <<JSON
+{
+  "embeds": [{
+    "title": "🚨 VPS SSH Login Alert",
+    "color": 3066993,
+    "fields": [
+      {"name": "Server", "value": "${HOST}", "inline": true},
+      {"name": "User", "value": "${USER}", "inline": true},
+      {"name": "Remote IP", "value": "${IP}", "inline": false},
+      {"name": "Timestamp", "value": "${DATE}", "inline": false}
+    ]
+  }]
+}
+JSON
+)
+    curl -fsSL -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$WEBHOOK_URL" >/dev/null 2>&1 &
+  fi
+fi
+exit 0
+```
+
+Make it executable and link to PAM in `/etc/pam.d/sshd`:
+
+```bash
+chmod 755 /usr/local/bin/ssh-login-alert.sh
+echo "session optional pam_exec.so seteuid /usr/local/bin/ssh-login-alert.sh" >> /etc/pam.d/sshd
+```
+
+> 💡 Using `session optional` and running curl with trailing `&` ensures notifications are sent asynchronously in the background. If a network outage or API error occurs, legitimate administrator SSH access is never blocked or delayed.
+
+---
+
+
 ## 🔧 Diagnostic Commands
 
 ```bash
+# Automated Security Verification Suite (All 11 Phases)
+sudo verify-hardening
+# or
+sudo ./verify.sh
+
 # Network listening services
 ss -tunap
 
@@ -338,6 +551,15 @@ sshd -t
 
 # Live authentication logs
 journalctl -u ssh -f
+
+# Verify /dev/shm mount permissions
+mount | grep /dev/shm
+
+# Check core dump limits
+ulimit -c
+
+# Auditd service status
+systemctl status auditd
 ```
 
 ---
@@ -347,7 +569,11 @@ journalctl -u ssh -f
 | Issue | Likely Cause | Resolution |
 | :--- | :--- | :--- |
 | SSH port does not change | systemd socket activation active | Run `systemctl disable --now ssh.socket && systemctl restart ssh.service` |
-| `ss` still shows port 22 in LISTEN | SSH service was not restarted | `systemctl restart ssh.service` |
+| `ss` still shows port 22 in LISTEN | SSH service was not restarted or superseded in main `sshd_config` | Comment out `Port 22` in `/etc/ssh/sshd_config` and `systemctl restart ssh.service` |
 | `Failed to access socket path` (Fail2ban) | Daemon socket initializing | Wait 2 seconds and rerun command |
 | Locked out of VPS | Firewall rule or invalid key | Access VPS via Cloud Provider Web VNC Console |
 | Banned by Fail2ban | Repeated failed authentications | `fail2ban-client set sshd unbanip <IP>` |
+| `sysctl: Permission denied` | Shared container VPS (LXC/OpenVZ) | Host manages ASLR/kptr; container profile skips host-restricted sysctl parameters |
+| PAM webhook fails to send | Missing curl or invalid webhook URL | Verify outgoing HTTP connectivity: `curl -fsSL https://www.google.com` |
+
+
