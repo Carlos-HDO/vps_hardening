@@ -30,6 +30,7 @@ C_YELLOW="\033[1;33m"
 C_BLUE="\033[1;34m"
 C_CYAN="\033[1;36m"
 C_BOLD="\033[1m"
+C_DIM="\033[2m"
 
 log_info()    { echo -e "${C_BLUE}[*]${C_RESET} $*"; }
 log_step()    { echo -e "${C_CYAN}[+]${C_RESET} ${C_BOLD}$*${C_RESET}"; }
@@ -339,6 +340,13 @@ if [ -z "$NOVO_USUARIO" ] || [ -z "$CHAVE_SSH" ]; then
       log_warn "An SSH public key is required to prevent server lockout!"
     fi
   done
+
+  INPUT_PORT=""
+  INPUT_TZ=""
+  INPUT_PORTS=""
+  ENABLE_TG=""
+  INPUT_WEBHOOK=""
+  INPUT_AUDIT=""
 
   read_input "${C_YELLOW}?${C_RESET} Custom SSH Port [${SSH_PORT}]: " INPUT_PORT "$SSH_PORT"
   SSH_PORT="$INPUT_PORT"
