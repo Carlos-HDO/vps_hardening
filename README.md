@@ -207,7 +207,7 @@ Always verify from an **independent local terminal**:
 
 ```bash
 # 1. Test SSH connectivity using your private key and custom port
-ssh -p 52211 operator@VPS_IP_ADDRESS
+ssh -i ~/.ssh/id_ed25519 -p 52211 operator@VPS_IP_ADDRESS
 
 # 2. Confirm sudo privileges
 sudo whoami

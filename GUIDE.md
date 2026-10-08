@@ -174,7 +174,7 @@ Output should show **only** `0.0.0.0:52211` and `[::]:52211` in `LISTEN` state.
 **Test from a separate local terminal:**
 
 ```bash
-ssh -p 52211 operator@VPS_IP_ADDRESS
+ssh -i ~/.ssh/id_ed25519 -p 52211 operator@VPS_IP_ADDRESS
 ```
 
 ---
