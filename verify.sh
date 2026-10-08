@@ -582,7 +582,7 @@ if [ -f /usr/local/bin/ssh-login-alert.sh ]; then
     check_warn "SSH Login Alerts" "/usr/local/bin/ssh-login-alert.sh is not executable"
   fi
 else
-  check_info "Alertas de Login SSH: Não configurado (Fase opcional — se Telegram ou Webhook não forem informados, esta etapa não é ativada)"
+  check_info "SSH Login Alerts: Not configured (Optional phase — inactive if Telegram or Webhook was not provided)"
 fi
 
 # ==============================================================================

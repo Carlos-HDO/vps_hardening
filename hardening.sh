@@ -366,18 +366,18 @@ if [ -z "$NOVO_USUARIO" ] || [ -z "$CHAVE_SSH" ]; then
 
   if [ -z "$TG_BOT_TOKEN" ] && [ -z "$WEBHOOK_URL" ]; then
     echo ""
-    log_info "Alertas de Login SSH em Tempo Real (Telegram / Webhook):"
-    echo -e "    ${C_DIM}ℹ️  Esta etapa é opcional. Se não for informado Telegram ou Webhook, ela NÃO será ativada.${C_RESET}"
-    read_input "${C_YELLOW}?${C_RESET} Deseja configurar alertas instantâneos via Telegram no login SSH? [y/N]: " ENABLE_TG "N"
+    log_info "Real-Time SSH Login Alerts (Telegram / Webhook):"
+    echo -e "    ${C_DIM}ℹ️  This step is optional. If Telegram or Webhook is not provided, it will NOT be activated.${C_RESET}"
+    read_input "${C_YELLOW}?${C_RESET} Configure instant Telegram alerts on SSH login? [y/N]: " ENABLE_TG "N"
     if [[ "$ENABLE_TG" =~ ^[YySs]$ ]]; then
-      read_input "    ${C_YELLOW}→${C_RESET} Telegram Bot Token (do @BotFather): " TG_BOT_TOKEN ""
-      read_input "    ${C_YELLOW}→${C_RESET} Telegram Chat ID (do @userinfobot): " TG_CHAT_ID ""
+      read_input "    ${C_YELLOW}→${C_RESET} Telegram Bot Token (from @BotFather): " TG_BOT_TOKEN ""
+      read_input "    ${C_YELLOW}→${C_RESET} Telegram Chat ID (from @userinfobot): " TG_CHAT_ID ""
     else
-      read_input "${C_YELLOW}?${C_RESET} URL alternativa de Webhook (Discord / Slack / Custom) [pular/Enter]: " INPUT_WEBHOOK ""
+      read_input "${C_YELLOW}?${C_RESET} Alternative Webhook URL (Discord / Slack / Custom) [skip/Enter]: " INPUT_WEBHOOK ""
       WEBHOOK_URL="$INPUT_WEBHOOK"
     fi
     if [ -z "$TG_BOT_TOKEN" ] && [ -z "$WEBHOOK_URL" ]; then
-      log_info "Alertas SSH: Nenhum canal informado. Etapa permanecerá desativada."
+      log_info "SSH Alerts: No notification channel provided. Step will remain inactive."
     fi
   fi
 
@@ -461,7 +461,7 @@ if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
 elif [ -n "$WEBHOOK_URL" ]; then
   echo -e "  SSH Login Webhook: ${C_GREEN}${WEBHOOK_URL:0:35}...${C_RESET}"
 else
-  echo -e "  SSH Login Alert:   ${C_YELLOW}Não Configurado (Opcional — só ativa se informado Telegram ou Webhook)${C_RESET}"
+  echo -e "  SSH Login Alert:   ${C_YELLOW}Not Configured (Optional — active only if Telegram or Webhook is provided)${C_RESET}"
 fi
 echo -e "  Lynis Audit Scan:  ${C_GREEN}${RUN_AUDIT}${C_RESET}"
 if [ "$DRY_RUN" = true ]; then
@@ -603,7 +603,7 @@ run_dry_run_simulation() {
     echo ""
   else
     echo -e "${C_BOLD}Phase 11: Real-Time SSH Login Alerts (Optional)${C_RESET}"
-    echo -e "  [DRY-RUN] Não configurado — Se não for informado Telegram (--tg-token / --tg-chat) ou Webhook (--webhook), esta etapa não será ativada."
+    echo -e "  [DRY-RUN] Not configured — If Telegram (--tg-token / --tg-chat) or Webhook (--webhook) is not provided, this step will not be activated."
     echo ""
   fi
 
@@ -649,8 +649,8 @@ log_info "Starting hardening process..."
 # PHASE 1 — Base System & Time Synchronization
 # ==================================================================
 echo ""
-log_step "Fase 1 — Sistema Base e Sincronização de Horário"
-log_info "Objetivo: Atualizar repositórios, instalar utilitários essenciais (sudo, curl) e sincronizar o relógio via NTP."
+log_step "Phase 1 — Base System & Time Synchronization"
+log_info "Objective: Update package repositories, install essential utilities (sudo, curl), and synchronize clock via NTP."
 
 PHASE1_ALREADY_CONFIGURED=false
 CURRENT_TZ="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
@@ -661,7 +661,7 @@ if command -v sudo >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && [ -n "$
 fi
 
 if [ "$PHASE1_ALREADY_CONFIGURED" = true ]; then
-  log_success "Fase 1: Sistema base, ferramentas essenciais (sudo, curl), fuso ($TIMEZONE) e NTP já estão no padrão. Pulando..."
+  log_success "Phase 1: Base system, essential tools (sudo, curl), timezone ($TIMEZONE), and NTP are already configured at standard. Skipping..."
 else
   log_step "1.1 Updating package repositories and installing baseline packages (sudo, curl)..."
   apt-get update -qq
@@ -682,8 +682,8 @@ fi
 # PHASE 2 — User Accounts
 # ==================================================================
 echo ""
-log_step "Fase 2 — Usuário Administrativo e Neutralização de Contas Cloud"
-log_info "Objetivo: Provisionar usuário '${NOVO_USUARIO}' com privilégios sudo e travar contas padrão vulneráveis (ubuntu, debian, admin, etc.)."
+log_step "Phase 2 — Administrative User & Cloud Account Neutralization"
+log_info "Objective: Provision user '${NOVO_USUARIO}' with sudo privileges and lock vulnerable default cloud accounts (ubuntu, debian, admin, etc.)."
 
 PHASE2_ALREADY_CONFIGURED=false
 if id "$NOVO_USUARIO" &>/dev/null && id -nG "$NOVO_USUARIO" 2>/dev/null | grep -qw "sudo"; then
@@ -711,7 +711,7 @@ if id "$NOVO_USUARIO" &>/dev/null && id -nG "$NOVO_USUARIO" 2>/dev/null | grep -
 fi
 
 if [ "$PHASE2_ALREADY_CONFIGURED" = true ]; then
-  log_success "Fase 2: Usuário '${NOVO_USUARIO}' e contas padrão de cloud já estão configurados no padrão. Pulando..."
+  log_success "Phase 2: User '${NOVO_USUARIO}' and default cloud accounts are already configured at standard. Skipping..."
 else
   log_step "2.1 Creating or configuring user '${NOVO_USUARIO}'..."
   if id "$NOVO_USUARIO" &>/dev/null; then
@@ -760,8 +760,8 @@ fi
 # PHASE 3 — SSH Hardening
 # ==================================================================
 echo ""
-log_step "Fase 3 — Hardening Criptográfico do OpenSSH"
-log_info "Objetivo: Migrar para a porta $SSH_PORT, desativar senhas/root e permitir exclusivamente login com chave SSH."
+log_step "Phase 3 — Cryptographic OpenSSH Hardening"
+log_info "Objective: Migrate to port $SSH_PORT, disable root/password logins, and enforce SSH key authentication only."
 
 USER_HOME="$(getent passwd "$NOVO_USUARIO" 2>/dev/null | cut -d: -f6 || echo "/home/$NOVO_USUARIO")"
 PHASE3_ALREADY_CONFIGURED=false
@@ -789,7 +789,7 @@ if [ -f /etc/ssh/sshd_config.d/00-hardening.conf ] && [ -f "$USER_HOME/.ssh/auth
 fi
 
 if [ "$PHASE3_ALREADY_CONFIGURED" = true ]; then
-  log_success "Fase 3: OpenSSH já está configurado no padrão (porta $SSH_PORT, autenticação exclusiva por chave). Pulando..."
+  log_success "Phase 3: OpenSSH is already configured at standard (port $SSH_PORT, key-only authentication). Skipping..."
 else
   log_step "3.1 Installing authorized SSH key for '${NOVO_USUARIO}'..."
   mkdir -p "$USER_HOME/.ssh"
@@ -876,8 +876,8 @@ fi
 # PHASE 4 — Firewall (UFW)
 # ==================================================================
 echo ""
-log_step "Fase 4 — Firewall Stateful (UFW)"
-log_info "Objetivo: Ativar o firewall com bloqueio padrão de entrada (default-deny) e rate-limiting na porta $SSH_PORT."
+log_step "Phase 4 — Stateful Firewall (UFW)"
+log_info "Objective: Enable firewall with default-deny inbound policy and rate-limiting on port $SSH_PORT."
 
 PHASE4_ALREADY_CONFIGURED=false
 if command -v ufw >/dev/null 2>&1; then
@@ -906,7 +906,7 @@ if command -v ufw >/dev/null 2>&1; then
 fi
 
 if [ "$PHASE4_ALREADY_CONFIGURED" = true ]; then
-  log_success "Fase 4: UFW Firewall já está ativo e configurado no padrão com a porta $SSH_PORT. Pulando..."
+  log_success "Phase 4: UFW Firewall is already active and configured at standard with port $SSH_PORT. Skipping..."
 else
   log_step "4. Configuring UFW Firewall..."
   apt-get install -y -qq ufw
@@ -937,8 +937,8 @@ fi
 # PHASE 5 — Fail2ban & Brute Force Protection
 # ==================================================================
 echo ""
-log_step "Fase 5 — Prevenção de Intrusão (Fail2ban)"
-log_info "Objetivo: Proteger contra tentativas repetidas de força bruta com banimento progressivo na porta $SSH_PORT."
+log_step "Phase 5 — Intrusion Prevention & Brute-Force Defense (Fail2ban)"
+log_info "Objective: Protect against repeated brute-force attacks with progressive ban escalation on port $SSH_PORT."
 
 PHASE5_ALREADY_CONFIGURED=false
 if command -v fail2ban-client >/dev/null 2>&1 && systemctl is-active --quiet fail2ban 2>/dev/null; then
@@ -950,7 +950,7 @@ if command -v fail2ban-client >/dev/null 2>&1 && systemctl is-active --quiet fai
 fi
 
 if [ "$PHASE5_ALREADY_CONFIGURED" = true ]; then
-  log_success "Fase 5: Fail2ban já está ativo e configurado no padrão monitorando a porta $SSH_PORT. Pulando..."
+  log_success "Phase 5: Fail2ban is already active and configured at standard monitoring port $SSH_PORT. Skipping..."
 else
   log_step "5. Installing and configuring fail2ban and tmux..."
   apt-get install -y -qq fail2ban tmux
@@ -992,8 +992,8 @@ fi
 # PHASE 6 — Kernel Hardening (sysctl)
 # ==================================================================
 echo ""
-log_step "Fase 6 — Hardening do Kernel (sysctl) e Otimização de Rede"
-log_info "Objetivo: Aplicar proteções de rede anti-spoofing, mitigação de SYN flood, ASLR, restrição de ponteiros e TCP BBR."
+log_step "Phase 6 — Kernel Hardening (sysctl) & Network Optimization"
+log_info "Objective: Apply anti-spoofing network parameters, SYN flood protection, ASLR, pointer restrictions, and TCP BBR."
 
 detect_virtualization
 
@@ -1017,7 +1017,7 @@ if [ -f /etc/sysctl.d/99-hardening.conf ]; then
 fi
 
 if [ "$PHASE6_ALREADY_CONFIGURED" = true ]; then
-  log_success "Fase 6: Parâmetros de kernel (sysctl) e otimizações de rede já estão no padrão ($VIRT_ENV). Pulando..."
+  log_success "Phase 6: Kernel parameters (sysctl) and network optimizations are already configured at standard ($VIRT_ENV). Skipping..."
 else
   log_step "6. Detecting virtualization environment and applying kernel parameters (sysctl)..."
 
@@ -1126,8 +1126,8 @@ fi
 # PHASE 7 — Automatic Security Updates
 # ==================================================================
 echo ""
-log_step "Fase 7 — Atualizações Automáticas de Segurança (Unattended-Upgrades)"
-log_info "Objetivo: Habilitar o serviço unattended-upgrades para correções de vulnerabilidades automáticas diárias."
+log_step "Phase 7 — Automatic Security Updates (Unattended-Upgrades)"
+log_info "Objective: Enable unattended-upgrades service for daily automated security vulnerability patching."
 
 PHASE7_ALREADY_CONFIGURED=false
 if [ -f /etc/apt/apt.conf.d/20auto-upgrades ] && grep -q 'Unattended-Upgrade "1"' /etc/apt/apt.conf.d/20auto-upgrades; then
@@ -1137,7 +1137,7 @@ if [ -f /etc/apt/apt.conf.d/20auto-upgrades ] && grep -q 'Unattended-Upgrade "1"
 fi
 
 if [ "$PHASE7_ALREADY_CONFIGURED" = true ]; then
-  log_success "Fase 7: Atualizações automáticas de segurança (unattended-upgrades) já estão ativas no padrão. Pulando..."
+  log_success "Phase 7: Automatic security updates (unattended-upgrades) are already active at standard. Skipping..."
 else
   log_step "7. Configuring unattended-upgrades..."
   apt-get install -y -qq unattended-upgrades apt-listchanges
@@ -1153,8 +1153,8 @@ fi
 # PHASE 8 — Filesystem & Memory Protection (CIS Benchmark)
 # ==================================================================
 echo ""
-log_step "Fase 8 — Proteção do Sistema de Arquivos e Memória (CIS Benchmark)"
-log_info "Objetivo: Proteger a memória compartilhada /dev/shm (nodev, nosuid, noexec) e desativar core dumps de processos."
+log_step "Phase 8 — Filesystem & Memory Protection (CIS Benchmark)"
+log_info "Objective: Secure shared memory /dev/shm (nodev, nosuid, noexec) and disable process core dumps."
 
 PHASE8_ALREADY_CONFIGURED=false
 SHM_CONFIGURED=false
@@ -1174,7 +1174,7 @@ if [ "$SHM_CONFIGURED" = true ] && [ "$COREDUMP_CONFIGURED" = true ]; then
 fi
 
 if [ "$PHASE8_ALREADY_CONFIGURED" = true ]; then
-  log_success "Fase 8: /dev/shm e desativação de coredumps já estão configurados no padrão. Pulando..."
+  log_success "Phase 8: /dev/shm and core dump restrictions are already configured at standard. Skipping..."
 else
   log_step "8.1 Securing shared memory (/dev/shm) with nodev, nosuid, and noexec..."
   if grep -E '\s/dev/shm\s' /etc/fstab >/dev/null 2>&1; then
@@ -1208,8 +1208,8 @@ fi
 # PHASE 9 — Kernel Modules Hardening (Disabling Obsolete Protocols)
 # ==================================================================
 echo ""
-log_step "Fase 9 — Blacklist de Protocolos de Rede Legados (Modprobe)"
-log_info "Objetivo: Bloquear protocolos obsoletos propensos a exploração de vulnerabilidades (dccp, sctp, rds, tipc, firewire-core)."
+log_step "Phase 9 — Legacy Network Protocols Blacklist (Modprobe)"
+log_info "Objective: Blacklist obsolete and uncommon protocols vulnerable to exploits (dccp, sctp, rds, tipc, firewire-core)."
 
 PHASE9_ALREADY_CONFIGURED=false
 if [ -f /etc/modprobe.d/hardening.conf ]; then
@@ -1222,7 +1222,7 @@ if [ -f /etc/modprobe.d/hardening.conf ]; then
 fi
 
 if [ "$PHASE9_ALREADY_CONFIGURED" = true ]; then
-  log_success "Fase 9: Blacklist de protocolos legados (modprobe) já está configurada no padrão. Pulando..."
+  log_success "Phase 9: Legacy protocol blacklist (modprobe) is already configured at standard. Skipping..."
 else
   log_step "9. Disabling unused and legacy network protocols in /etc/modprobe.d/hardening.conf..."
   mkdir -p /etc/modprobe.d
@@ -1241,8 +1241,8 @@ fi
 # PHASE 10 — System Auditing & Intrusion Logging
 # ==================================================================
 echo ""
-log_step "Fase 10 — Auditoria de Segurança do Sistema (Auditd & Lynis)"
-log_info "Objetivo: Instalar e ativar o serviço auditd para auditoria e rastreamento de eventos de segurança no kernel."
+log_step "Phase 10 — System Security Auditing (Auditd & Lynis)"
+log_info "Objective: Install and activate the auditd daemon for kernel-level security event tracing."
 
 PHASE10_ALREADY_CONFIGURED=false
 if systemctl is-active --quiet auditd 2>/dev/null; then
@@ -1252,7 +1252,7 @@ if systemctl is-active --quiet auditd 2>/dev/null; then
 fi
 
 if [ "$PHASE10_ALREADY_CONFIGURED" = true ]; then
-  log_success "Fase 10: Subsistema de auditoria (auditd) já está instalado e ativo no padrão. Pulando..."
+  log_success "Phase 10: System audit daemon (auditd) is already installed and active at standard. Skipping..."
 else
   log_step "10.1 Installing and configuring auditd system audit daemon..."
   apt-get install -y -qq auditd
@@ -1275,8 +1275,8 @@ fi
 # PHASE 11 — Real-Time SSH Login Alerts (Telegram & Webhook)
 # ==================================================================
 echo ""
-log_step "Fase 11 — Alertas de Login SSH em Tempo Real (PAM)"
-log_info "Objetivo: Disparar notificações instantâneas a cada login SSH no servidor (Opcional)."
+log_step "Phase 11 — Real-Time SSH Login Alerts (PAM)"
+log_info "Objective: Dispatch instant notifications upon every SSH login to the server (Optional)."
 
 if ([ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]) || [ -n "$WEBHOOK_URL" ]; then
   PHASE11_ALREADY_CONFIGURED=false
@@ -1289,7 +1289,7 @@ if ([ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]) || [ -n "$WEBHOOK_URL" ]; th
   fi
 
   if [ "$PHASE11_ALREADY_CONFIGURED" = true ]; then
-    log_success "Fase 11: Alertas de login SSH (PAM) já estão configurados no padrão. Pulando..."
+    log_success "Phase 11: Real-time SSH login alerts (PAM) are already configured at standard. Skipping..."
   else
     log_step "11. Configuring real-time SSH login notifications via PAM..."
     cat > /usr/local/bin/ssh-login-alert.sh <<'EOF'
@@ -1379,7 +1379,7 @@ EOF
     fi
   fi
 else
-  log_info "Fase 11: Alertas de login SSH não configurados (Fase opcional — se Telegram ou Webhook não forem informados, esta etapa não é ativada)."
+  log_info "Phase 11: Real-time SSH login alerts not configured (Optional phase — inactive if Telegram or Webhook was not provided)."
 fi
 
 # ==================================================================
@@ -1446,7 +1446,7 @@ if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
 elif [ -n "$WEBHOOK_URL" ]; then
   echo -e "    - Real-time SSH login notifications configured via PAM"
 else
-  echo -e "    - SSH login alerts:    Não configurado (opcional — só é ativado se informado Telegram ou Webhook)"
+  echo -e "    - SSH login alerts:    Not configured (optional — active only if Telegram or Webhook is provided)"
 fi
   if [ "$RUN_AUDIT" = true ]; then
     echo -e "    - Lynis audit complete (Hardening Index: ${C_GREEN}${LYNIS_SCORE}${C_RESET}, Report: /var/log/lynis-hardening-report.txt)"
