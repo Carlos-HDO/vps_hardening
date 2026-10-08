@@ -328,8 +328,13 @@ if [ -z "$NOVO_USUARIO" ] || [ -z "$CHAVE_SSH" ]; then
   echo -e "${C_BOLD}==========================================================${C_RESET}"
   echo ""
 
+  DEFAULT_ADMIN_USER="operator"
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    DEFAULT_ADMIN_USER="$SUDO_USER"
+  fi
+
   if [ -z "$NOVO_USUARIO" ]; then
-    read_input "${C_YELLOW}?${C_RESET} New administrative username [operator]: " NOVO_USUARIO "operator"
+    read_input "${C_YELLOW}?${C_RESET} New administrative username [${DEFAULT_ADMIN_USER}]: " NOVO_USUARIO "$DEFAULT_ADMIN_USER"
   fi
 
   while [ -z "$CHAVE_SSH" ]; do
@@ -361,8 +366,8 @@ if [ -z "$NOVO_USUARIO" ] || [ -z "$CHAVE_SSH" ]; then
 
   if [ -z "$TG_BOT_TOKEN" ] && [ -z "$WEBHOOK_URL" ]; then
     echo ""
-    log_info "Fase 11 — Alertas de Login SSH em Tempo Real:"
-    echo -e "    ${C_DIM}ℹ️  Esta fase é opcional. Se não for informado Telegram ou Webhook, ela NÃO será ativada.${C_RESET}"
+    log_info "Alertas de Login SSH em Tempo Real (Telegram / Webhook):"
+    echo -e "    ${C_DIM}ℹ️  Esta etapa é opcional. Se não for informado Telegram ou Webhook, ela NÃO será ativada.${C_RESET}"
     read_input "${C_YELLOW}?${C_RESET} Deseja configurar alertas instantâneos via Telegram no login SSH? [y/N]: " ENABLE_TG "N"
     if [[ "$ENABLE_TG" =~ ^[YySs]$ ]]; then
       read_input "    ${C_YELLOW}→${C_RESET} Telegram Bot Token (do @BotFather): " TG_BOT_TOKEN ""
@@ -372,7 +377,7 @@ if [ -z "$NOVO_USUARIO" ] || [ -z "$CHAVE_SSH" ]; then
       WEBHOOK_URL="$INPUT_WEBHOOK"
     fi
     if [ -z "$TG_BOT_TOKEN" ] && [ -z "$WEBHOOK_URL" ]; then
-      log_info "Alertas SSH: Nenhum canal informado. Fase 11 permanecerá desativada."
+      log_info "Alertas SSH: Nenhum canal informado. Etapa permanecerá desativada."
     fi
   fi
 
@@ -712,7 +717,11 @@ else
   if id "$NOVO_USUARIO" &>/dev/null; then
     log_info "User '${NOVO_USUARIO}' already exists, ensuring sudo group membership."
   else
-    useradd -m -s /bin/bash "$NOVO_USUARIO"
+    if getent group "$NOVO_USUARIO" >/dev/null 2>&1; then
+      useradd -m -g "$NOVO_USUARIO" -s /bin/bash "$NOVO_USUARIO"
+    else
+      useradd -m -U -s /bin/bash "$NOVO_USUARIO" 2>/dev/null || useradd -m -s /bin/bash "$NOVO_USUARIO"
+    fi
     log_success "User '${NOVO_USUARIO}' created successfully."
   fi
   if ! getent group sudo >/dev/null 2>&1; then

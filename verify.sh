@@ -162,6 +162,9 @@ if [ -z "$TARGET_USER" ]; then
   if [ -f /etc/ssh/sshd_config.d/00-hardening.conf ]; then
     TARGET_USER="$(grep -E '^\s*AllowUsers\s+' /etc/ssh/sshd_config.d/00-hardening.conf | awk '{print $2}' | head -n 1 || true)"
   fi
+  if [ -z "$TARGET_USER" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    TARGET_USER="$SUDO_USER"
+  fi
   if [ -z "$TARGET_USER" ]; then
     # Pick first non-system user in sudo group
     for u in $(getent group sudo 2>/dev/null | awk -F: '{print $4}' | tr ',' ' '); do
