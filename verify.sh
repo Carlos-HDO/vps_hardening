@@ -10,7 +10,7 @@
 # Options:
 #   -p, --port <port>       Target SSH port to verify (auto-detected if omitted)
 #   -u, --user <username>   Target admin user to verify (auto-detected if omitted)
-#   --embedded              Compact format when called directly from hardening.sh
+#   --embedded              Accepted for compatibility (no effect)
 #   -h, --help              Show this help message
 # ==============================================================================
 
@@ -32,7 +32,6 @@ PASSED_TESTS=0
 FAILED_TESTS=0
 WARN_TESTS=0
 
-EMBEDDED_MODE=false
 CUSTOM_PORT=""
 CUSTOM_USER=""
 
@@ -48,7 +47,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --embedded)
-      EMBEDDED_MODE=true
+      # Accepted for compatibility with older hardening.sh versions (no-op)
       shift
       ;;
     -h|--help)
@@ -58,7 +57,7 @@ Usage: sudo $0 [options]
 Options:
   -p, --port <port>       Target SSH port (default: auto-detected or 52211)
   -u, --user <username>   Target admin username (default: auto-detected)
-  --embedded              Compact output format for automated installers
+  --embedded              Accepted for compatibility (no effect)
   -h, --help              Display this help message
 EOF
       exit 0

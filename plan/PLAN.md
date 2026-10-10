@@ -180,15 +180,15 @@ Gravar `hardening_backup_<ts>.state` (formato `chave=valor`) com:
 
 ## Etapa 6 — CI e drift de `configs/` (#9)
 
-### [ ] 6.1 Lint completo
+### [x] 6.1 Lint completo
 - **Onde:** `.github/workflows/ci.yml`. Incluir `verify.sh` no `bash -n` e no `shellcheck`.
 - Rever as exclusões globais `-e SC2086 -e SC2034`: trocar por `# shellcheck disable=` pontuais onde forem realmente necessárias.
 
-### [ ] 6.2 Check de drift
+### [x] 6.2 Check de drift
 - **Decisão adotada:** `configs/` continua como *template de referência* para quem aplica manualmente. O `hardening.sh` mantém os heredocs, porque precisa funcionar via `curl | bash` sem baixar arquivos no meio da execução.
 - Criar `tests/check-config-drift.sh`: extrai cada heredoc do `hardening.sh`, normaliza a porta/usuário (`52211`/`operator` ↔ `$SSH_PORT`/`$NOVO_USUARIO`) e faz `diff` com o arquivo correspondente em `configs/`. Falha no CI se houver diferença.
 
-### [ ] 6.3 Teste E2E num runner real
+### [x] 6.3 Teste E2E num runner real
 - Novo job em `ubuntu-22.04` e `ubuntu-24.04` (VMs efêmeras do GitHub, com root e systemd):
   1. `sudo ./hardening.sh -y --password-hash ... --no-safety-timer -u ciuser -k "<chave gerada no job>" -p 52211`
   2. `sudo ./verify.sh --port 52211 --user ciuser`, que tem que sair com 0 falhas. Conferir que o `verify.sh` retorna exit code ≠ 0 quando há falhas; se não retornar, corrigir.
@@ -196,6 +196,7 @@ Gravar `hardening_backup_<ts>.state` (formato `chave=valor`) com:
   4. `sudo ./rollback.sh --yes`, depois validar que o SSH volta para a 22 e que os arquivos do manifesto sumiram.
   5. Rodar o hardening duas vezes seguidas para validar a idempotência e o caso do `LYNIS_SCORE`.
 - A matriz de dry-run em containers continua cobrindo Debian 11/12.
+- ⚠️ O job E2E ainda não rodou no GitHub (a branch não foi enviada). O mesmo fluxo foi validado localmente em containers systemd Debian 12 / Ubuntu 24.04.
 
 ---
 

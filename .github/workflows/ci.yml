@@ -8,7 +8,7 @@ on:
 
 jobs:
   lint:
-    name: ShellCheck & Syntax Validation
+    name: ShellCheck, Syntax & Config Drift
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -16,18 +16,22 @@ jobs:
 
       - name: Validate Bash syntax (bash -n)
         run: |
-          bash -n hardening.sh
-          bash -n rollback.sh
-          bash -n quick-install.sh
-          bash -n configs/ssh-login-alert.sh
+          for f in hardening.sh verify.sh rollback.sh quick-install.sh configs/ssh-login-alert.sh tests/*.sh; do
+            bash -n "$f"
+          done
 
       - name: Run ShellCheck
         run: |
-          shellcheck -x -e SC1091 -e SC2086 -e SC2034 \
+          shellcheck -x \
             hardening.sh \
+            verify.sh \
             rollback.sh \
             quick-install.sh \
-            configs/ssh-login-alert.sh
+            configs/ssh-login-alert.sh \
+            tests/*.sh
+
+      - name: Check configs/ templates match the copies embedded in hardening.sh
+        run: tests/check-config-drift.sh
 
   dry-run-matrix:
     name: Dry-Run Simulation Matrix
@@ -56,6 +60,7 @@ jobs:
         run: |
           ./hardening.sh --help
           ./rollback.sh --help
+          ./verify.sh --help
 
       - name: Execute Full Dry-Run Simulation
         run: |
@@ -67,3 +72,65 @@ jobs:
             --tg-token "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" \
             --tg-chat "987654321" \
             -y
+
+  e2e:
+    name: E2E Harden → Verify → Rollback (${{ matrix.os }})
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ "ubuntu-22.04", "ubuntu-24.04" ]
+    env:
+      CI_USER: ciuser
+      CI_PORT: "52211"
+      CI_PASSWORD: ci-test-password
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH server and test key
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssh-server
+          ssh-keygen -t ed25519 -N "" -f "$RUNNER_TEMP/ci_key" -q
+          echo "SSH_OPTS=-i $RUNNER_TEMP/ci_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10" >> "$GITHUB_ENV"
+          echo "PASSWORD_HASH=$(openssl passwd -6 "$CI_PASSWORD")" >> "$GITHUB_ENV"
+
+      - name: Capture original state
+        run: |
+          sudo ufw status | head -n 1 > "$RUNNER_TEMP/ufw_before"
+          sysctl -n net.ipv4.tcp_congestion_control > "$RUNNER_TEMP/cc_before"
+
+      - name: First hardening run (with Lynis)
+        run: |
+          sudo ./hardening.sh -y -u "$CI_USER" -k "$(cat "$RUNNER_TEMP/ci_key.pub")" -p "$CI_PORT" \
+            --password-hash "$PASSWORD_HASH" --skip-upgrade --no-verify --audit
+
+      - name: Verification suite reports no failures
+        run: sudo ./verify.sh --port "$CI_PORT" --user "$CI_USER"
+
+      - name: Key login and sudo on the new port
+        run: |
+          ssh $SSH_OPTS -p "$CI_PORT" "$CI_USER@127.0.0.1" "echo '$CI_PASSWORD' | sudo -S -p '' whoami" | grep -qx root
+
+      - name: Second run is idempotent and keeps the original snapshot
+        run: |
+          sudo ./hardening.sh -y -u "$CI_USER" -k "$(cat "$RUNNER_TEMP/ci_key.pub")" -p "$CI_PORT" \
+            --password-hash "$PASSWORD_HASH" --skip-upgrade --no-verify --audit | tee "$RUNNER_TEMP/run2.log"
+          grep -q "Original pre-hardening snapshot already exists" "$RUNNER_TEMP/run2.log"
+          test "$(sudo find /var/backups/vps_hardening -name 'hardening_backup_*.tar.gz' | wc -l)" -eq 1
+
+      - name: Rollback
+        run: sudo ./rollback.sh --yes
+
+      - name: Original state is restored
+        run: |
+          test ! -e /etc/ssh/sshd_config.d/00-hardening.conf
+          test ! -e /etc/sysctl.d/99-hardening.conf
+          if sudo ss -tlnp | grep -q ":${CI_PORT} "; then
+            echo "sshd is still listening on ${CI_PORT}"; exit 1
+          fi
+          diff <(sudo ufw status | head -n 1) "$RUNNER_TEMP/ufw_before"
+          diff <(sysctl -n net.ipv4.tcp_congestion_control) "$RUNNER_TEMP/cc_before"
+          ssh $SSH_OPTS -p 22 "$CI_USER@127.0.0.1" true

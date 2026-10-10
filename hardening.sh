@@ -1688,7 +1688,7 @@ fi
 echo ""
 echo -e "  ${C_BOLD}Backups Created:${C_RESET}"
 echo -e "    - /etc/ssh/sshd_config.bak and /etc/ssh/sshd_config.d/*.conf.bak (SSH backups)"
-if ([ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]) || [ -n "$WEBHOOK_URL" ]; then
+if { [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; } || [ -n "$WEBHOOK_URL" ]; then
   echo -e "    - /etc/pam.d/sshd.bak (PAM SSH backup)"
 fi
 echo -e "    - /home/*/.ssh/authorized_keys.disabled (disabled default provider keys)"
