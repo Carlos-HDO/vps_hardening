@@ -1269,38 +1269,62 @@ echo ""
 log_step "Phase 11 — Real-Time SSH Login Alerts (PAM)"
 log_info "Objective: Dispatch instant notifications upon every SSH login to the server (Optional)."
 
-if ([ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]) || [ -n "$WEBHOOK_URL" ]; then
+if { [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; } || [ -n "$WEBHOOK_URL" ]; then
+  # Credentials live in a root-only config file (never inside the world-readable script).
+  # printf %q keeps any character (&, |, quotes) intact when the file is sourced.
+  ALERT_CONF_DESIRED="$(printf 'TG_BOT_TOKEN=%q\nTG_CHAT_ID=%q\nWEBHOOK_URL=%q\n' "$TG_BOT_TOKEN" "$TG_CHAT_ID" "$WEBHOOK_URL")"
+
   PHASE11_ALREADY_CONFIGURED=false
-  if [ -f /usr/local/bin/ssh-login-alert.sh ] && [ -f /etc/pam.d/sshd ] && grep -q 'ssh-login-alert.sh' /etc/pam.d/sshd; then
-    if [ -n "$TG_BOT_TOKEN" ] && grep -q "$TG_BOT_TOKEN" /usr/local/bin/ssh-login-alert.sh 2>/dev/null; then
-      PHASE11_ALREADY_CONFIGURED=true
-    elif [ -n "$WEBHOOK_URL" ] && grep -q "$WEBHOOK_URL" /usr/local/bin/ssh-login-alert.sh 2>/dev/null; then
-      PHASE11_ALREADY_CONFIGURED=true
-    fi
+  if [ -f /usr/local/bin/ssh-login-alert.sh ] && grep -qF 'ALERT_CONF="/etc/vps-hardening/alert.conf"' /usr/local/bin/ssh-login-alert.sh && \
+     [ -f /etc/vps-hardening/alert.conf ] && [ "$(cat /etc/vps-hardening/alert.conf)" = "$ALERT_CONF_DESIRED" ] && \
+     [ -f /etc/pam.d/sshd ] && grep -q 'ssh-login-alert.sh' /etc/pam.d/sshd; then
+    PHASE11_ALREADY_CONFIGURED=true
   fi
 
   if [ "$PHASE11_ALREADY_CONFIGURED" = true ]; then
     log_success "Phase 11: Real-time SSH login alerts (PAM) are already configured at standard. Skipping..."
   else
-    log_step "11. Configuring real-time SSH login notifications via PAM..."
+    log_step "11.1 Storing alert credentials in /etc/vps-hardening/alert.conf (root only, mode 600)..."
+    install -d -m 700 -o root -g root /etc/vps-hardening
+    (umask 077 && printf '%s\n' "$ALERT_CONF_DESIRED" > /etc/vps-hardening/alert.conf)
+    chown root:root /etc/vps-hardening/alert.conf
+    chmod 600 /etc/vps-hardening/alert.conf
+
+    log_step "11.2 Installing dispatcher /usr/local/bin/ssh-login-alert.sh and PAM session hook..."
     cat > /usr/local/bin/ssh-login-alert.sh <<'EOF'
 #!/usr/bin/env bash
-# Real-time SSH Login Notification Dispatcher for Telegram & Webhooks
+# /usr/local/bin/ssh-login-alert.sh
+# Real-time SSH Login Notification Dispatcher for Telegram, Discord, or Generic Webhooks
+# Triggered automatically via PAM session in /etc/pam.d/sshd
+# Credentials are read from /etc/vps-hardening/alert.conf (root:root, mode 600)
 set -euo pipefail
 
-TG_BOT_TOKEN="__TG_BOT_TOKEN_PLACEHOLDER__"
-TG_CHAT_ID="__TG_CHAT_ID_PLACEHOLDER__"
-WEBHOOK_URL="__WEBHOOK_URL_PLACEHOLDER__"
+ALERT_CONF="/etc/vps-hardening/alert.conf"
+TG_BOT_TOKEN=""
+TG_CHAT_ID=""
+WEBHOOK_URL=""
 
-if [ "${PAM_TYPE:-}" = "open_session" ]; then
-  HOST="$(hostname)"
-  USER="${PAM_USER:-unknown}"
-  IP="${PAM_RHOST:-unknown}"
-  DATE="$(date "+%Y-%m-%d %H:%M:%S %Z")"
+[ "${PAM_TYPE:-}" = "open_session" ] || exit 0
+[ -r "$ALERT_CONF" ] || exit 0
+# shellcheck source=/dev/null
+. "$ALERT_CONF"
 
-  # 1. Telegram Bot API Dispatch (HTML Format)
-  if [ -n "$TG_BOT_TOKEN" ] && [ "$TG_BOT_TOKEN" != "none" ] && [ -n "$TG_CHAT_ID" ] && [ "$TG_CHAT_ID" != "none" ]; then
-    TG_MSG="🚨 <b>VPS SSH LOGIN ALERT</b>
+# Escape backslashes and double quotes for safe embedding in JSON strings
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+HOST="$(hostname)"
+USER="${PAM_USER:-unknown}"
+IP="${PAM_RHOST:-unknown}"
+DATE="$(date "+%Y-%m-%d %H:%M:%S %Z")"
+
+# 1. Telegram Bot API Dispatch (HTML Format)
+if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+  TG_MSG="🚨 <b>VPS SSH LOGIN ALERT</b>
 ━━━━━━━━━━━━━━━━━━
 🖥️ <b>Server:</b> <code>${HOST}</code>
 👤 <b>User:</b> <code>${USER}</code>
@@ -1309,46 +1333,49 @@ if [ "${PAM_TYPE:-}" = "open_session" ]; then
 ━━━━━━━━━━━━━━━━━━
 ⚠️ <i>If this was not you, verify active sessions immediately!</i>"
 
-    curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-      -d "chat_id=${TG_CHAT_ID}" \
-      -d "parse_mode=HTML" \
-      --data-urlencode "text=${TG_MSG}" >/dev/null 2>&1 &
-  fi
+  curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+    -d "chat_id=${TG_CHAT_ID}" \
+    -d "parse_mode=HTML" \
+    --data-urlencode "text=${TG_MSG}" >/dev/null 2>&1 &
+fi
 
-  # 2. Discord Webhook Dispatch
-  if [[ "$WEBHOOK_URL" =~ discord(app)?\.com/api/webhooks ]]; then
-    JSON_PAYLOAD=$(cat <<JSON
+J_HOST="$(json_escape "$HOST")"
+J_USER="$(json_escape "$USER")"
+J_IP="$(json_escape "$IP")"
+J_DATE="$(json_escape "$DATE")"
+
+# 2. Discord Webhook Dispatch
+if [[ "$WEBHOOK_URL" =~ discord(app)?\.com/api/webhooks ]]; then
+  JSON_PAYLOAD=$(cat <<JSON
 {
   "embeds": [{
     "title": "🚨 VPS SSH Login Alert",
     "color": 3066993,
     "fields": [
-      {"name": "Server", "value": "${HOST}", "inline": true},
-      {"name": "User", "value": "${USER}", "inline": true},
-      {"name": "Remote IP", "value": "${IP}", "inline": false},
-      {"name": "Timestamp", "value": "${DATE}", "inline": false}
+      {"name": "Server", "value": "${J_HOST}", "inline": true},
+      {"name": "User", "value": "${J_USER}", "inline": true},
+      {"name": "Remote IP", "value": "${J_IP}", "inline": false},
+      {"name": "Timestamp", "value": "${J_DATE}", "inline": false}
     ]
   }]
 }
 JSON
 )
-    curl -fsSL -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$WEBHOOK_URL" >/dev/null 2>&1 &
-  elif [ -n "$WEBHOOK_URL" ] && [ "$WEBHOOK_URL" != "none" ]; then
-    # Generic Webhook JSON POST
-    JSON_PAYLOAD=$(cat <<JSON
-{"event":"ssh_login","server":"${HOST}","user":"${USER}","remote_ip":"${IP}","timestamp":"${DATE}"}
+  curl -fsSL -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$WEBHOOK_URL" >/dev/null 2>&1 &
+
+# 3. Generic Webhook JSON POST
+elif [ -n "$WEBHOOK_URL" ]; then
+  JSON_PAYLOAD=$(cat <<JSON
+{"event":"ssh_login","server":"${J_HOST}","user":"${J_USER}","remote_ip":"${J_IP}","timestamp":"${J_DATE}"}
 JSON
 )
-    curl -fsSL -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$WEBHOOK_URL" >/dev/null 2>&1 &
-  fi
+  curl -fsSL -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$WEBHOOK_URL" >/dev/null 2>&1 &
 fi
+
 exit 0
 EOF
-
-    sed -i "s|__TG_BOT_TOKEN_PLACEHOLDER__|$TG_BOT_TOKEN|g" /usr/local/bin/ssh-login-alert.sh
-    sed -i "s|__TG_CHAT_ID_PLACEHOLDER__|$TG_CHAT_ID|g" /usr/local/bin/ssh-login-alert.sh
-    sed -i "s|__WEBHOOK_URL_PLACEHOLDER__|$WEBHOOK_URL|g" /usr/local/bin/ssh-login-alert.sh
-    chmod 755 /usr/local/bin/ssh-login-alert.sh
+    chown root:root /usr/local/bin/ssh-login-alert.sh
+    chmod 700 /usr/local/bin/ssh-login-alert.sh
 
     if [ -f /etc/pam.d/sshd ]; then
       [ -f /etc/pam.d/sshd.bak ] || cp /etc/pam.d/sshd /etc/pam.d/sshd.bak
@@ -1359,10 +1386,8 @@ EOF
 
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
       log_info "Testing Telegram bot connection..."
-      TEST_MSG="🛡️ <b>VPS Hardening Alert Activated!</b>%0AServer: <code>$(hostname)</code>%0APort: <code>${SSH_PORT}</code>"
       curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
         -d "chat_id=${TG_CHAT_ID}" \
-        -d "parse_mode=HTML" \
         --data-urlencode "text=🛡️ VPS Hardening Alert Activated for $(hostname) on port ${SSH_PORT}" >/dev/null 2>&1 || true
       log_success "Telegram SSH login alert configured and connected to Chat ID: ${TG_CHAT_ID}."
     else

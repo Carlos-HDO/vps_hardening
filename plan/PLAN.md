@@ -52,29 +52,29 @@ Cada etapa vira um commit próprio, para facilitar a revisão e um eventual reve
 
 **Problema:** o token, o chat ID e a URL do webhook são injetados com `sed` no script `/usr/local/bin/ssh-login-alert.sh`, que tem modo `755`. Isso causa dois problemas: um `&` ou `|` na URL corrompe o valor, e o token fica legível por qualquer usuário local.
 
-### [ ] 2.1 Separar os segredos do script
+### [x] 2.1 Separar os segredos do script
 - Criar `/etc/vps-hardening/alert.conf` (dono `root:root`, modo `600`) gravado com `printf '%s=%q\n'` para cada variável. Nada de `sed`.
 - O script de alerta faz `source /etc/vps-hardening/alert.conf` (ou sai com `exit 0` se o arquivo não existir).
 - Script de alerta: `root:root`, modo `700` (não contém mais segredos, mas não há motivo para outros usuários o executarem).
 - Remover o bloco de `sed` (`hardening.sh:1357-1359`).
 
-### [ ] 2.2 Fonte única do script de alerta
+### [x] 2.2 Fonte única do script de alerta
 - O conteúdo do heredoc (`hardening.sh:1295-1355`) passa a ser idêntico a `configs/ssh-login-alert.sh`, adaptado para ler o `alert.conf`. O check de drift da Etapa 6 garante que os dois continuem iguais.
 
-### [ ] 2.3 Escapar o JSON do webhook
+### [x] 2.3 Escapar o JSON do webhook
 - `HOST`, `USER` e `IP` entram crus no JSON. Escapar `\` e `"` antes de montar o payload, com uma função `json_escape` simples em bash.
 
-### [ ] 2.4 Idempotência da Fase 11
+### [x] 2.4 Idempotência da Fase 11
 - **Onde:** `hardening.sh:1283-1289`. Hoje a fase faz `grep` do token dentro do script.
 - **Correção:** comparar com o conteúdo de `alert.conf`, usando `grep -qxF`, que também evita interpretar o token como regex.
 
-### [ ] 2.5 Mensagem de teste
+### [x] 2.5 Mensagem de teste
 - `TEST_MSG` (`hardening.sh:1371`) é montada mas nunca usada. Remover a variável ou usá-la de fato.
 
 **Testes:**
 - Webhook `https://example.com/hook?a=1&b=2|x` → `alert.conf` guarda o valor exato.
 - `stat -c '%a %U' /etc/vps-hardening/alert.conf` deve retornar `600 root`.
-- Login SSH real numa VM de teste dispara o alerta. Isso também confirma que o `pam_exec` com `seteuid` roda como root e consegue ler o arquivo `600`. **Validar antes de dar o item como pronto.**
+- Login SSH real numa VM de teste dispara o alerta. Isso também confirma que o `pam_exec` com `seteuid` roda como root e consegue ler o arquivo `600`. ✅ Validado em container Debian 12 com sshd e login real.
 
 ---
 
