@@ -328,7 +328,8 @@ vps_hardening/
 ├── CHANGELOG.md                  # Release history
 ├── LICENSE                       # MIT License
 ├── plan/
-│   └── PLAN.md                   # Remediation plan and its status
+│   ├── PLAN.md                   # Remediation plan and its status
+│   └── TEST-PLAN.md              # Next test phases (real VPS, reboot, lockout, upgrades)
 ├── tests/
 │   └── check-config-drift.sh     # CI check: configs/ templates == copies embedded in hardening.sh
 └── configs/                      # Reference templates for manual hardening (kept in sync by CI)
