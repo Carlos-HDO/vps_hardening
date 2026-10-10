@@ -12,6 +12,8 @@
 | **Never terminate your current SSH session** while modifying SSH or firewall rules | If a syntax error or lockout occurs, your active session remains open to fix it. |
 | **Always verify access from a NEW terminal window** before dropping old access | Confirms that key authentication, port configuration, and firewall rules truly work. |
 | **Allow the custom SSH port in UFW BEFORE enabling the firewall** | Prevents accidentally locking yourself out of the machine. |
+| **Allow the custom SSH port in the provider's firewall too** (Hetzner Cloud Firewall, AWS Security Group, DigitalOcean Cloud Firewall…) | UFW only controls the server; an external firewall still blocks the new port. |
+| **Keep an automatic way back** while testing (`hardening.sh` arms a 10-minute auto-revert timer in interactive mode) | If the new login fails and you lose the session, the server reverts by itself. |
 | **Take a snapshot / backup via your cloud control panel** beforehand | Provides instant rollback if critical network configurations fail. |
 | If you lose SSH access, utilize the **cloud provider's web console (VNC / Serial)** | Contabo, DigitalOcean, Hetzner, Vultr, AWS, etc., provide browser-based rescue consoles. |
 
@@ -24,10 +26,10 @@
 First command upon logging in as `root`:
 
 ```bash
-apt update && apt install -y sudo curl && apt upgrade -y
+apt update && apt install -y sudo curl tmux && apt upgrade -y
 ```
 
-> 💡 **Debian Note**: Minimal Debian images (netinst, cloud templates) often lack `sudo` and `curl` out of the box. Installing them upfront prevents script breaks when configuring non-root administrative users.
+> 💡 **Debian Note**: Minimal Debian images (netinst, cloud templates) often lack `sudo` and `curl` out of the box. `tmux` keeps long-running work alive if the SSH session drops. Installing them upfront prevents script breaks when configuring non-root administrative users.
 
 
 ### 1.2 Configure Timezone and NTP Synchronization
@@ -457,73 +459,43 @@ Receive immediate mobile notifications whenever an administrator or adversary lo
 
 ### 11.2 Automated Dispatcher (`/usr/local/bin/ssh-login-alert.sh`)
 
-Create `/usr/local/bin/ssh-login-alert.sh`:
+Keep the credentials out of the script: store them in a root-only config file. `printf %q` keeps characters such as `&` or `|` in webhook URLs intact:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-TG_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
-TG_CHAT_ID="YOUR_TELEGRAM_CHAT_ID"
-WEBHOOK_URL="YOUR_OPTIONAL_DISCORD_WEBHOOK"
-
-if [ "${PAM_TYPE:-}" = "open_session" ]; then
-  HOST="$(hostname)"
-  USER="${PAM_USER:-unknown}"
-  IP="${PAM_RHOST:-unknown}"
-  DATE="$(date "+%Y-%m-%d %H:%M:%S %Z")"
-
-  # Telegram Bot Alert
-  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-    TG_MSG="🚨 <b>VPS SSH LOGIN ALERT</b>
-━━━━━━━━━━━━━━━━━━
-🖥️ <b>Server:</b> <code>${HOST}</code>
-👤 <b>User:</b> <code>${USER}</code>
-🌐 <b>Remote IP:</b> <code>${IP}</code>
-🕒 <b>Date:</b> <code>${DATE}</code>
-━━━━━━━━━━━━━━━━━━
-⚠️ <i>If this was not you, verify active sessions immediately!</i>"
-
-    curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-      -d "chat_id=${TG_CHAT_ID}" \
-      -d "parse_mode=HTML" \
-      --data-urlencode "text=${TG_MSG}" >/dev/null 2>&1 &
-  fi
-
-  # Optional Discord Webhook
-  if [[ "$WEBHOOK_URL" =~ discord(app)?\.com/api/webhooks ]]; then
-    JSON_PAYLOAD=$(cat <<JSON
-{
-  "embeds": [{
-    "title": "🚨 VPS SSH Login Alert",
-    "color": 3066993,
-    "fields": [
-      {"name": "Server", "value": "${HOST}", "inline": true},
-      {"name": "User", "value": "${USER}", "inline": true},
-      {"name": "Remote IP", "value": "${IP}", "inline": false},
-      {"name": "Timestamp", "value": "${DATE}", "inline": false}
-    ]
-  }]
-}
-JSON
-)
-    curl -fsSL -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$WEBHOOK_URL" >/dev/null 2>&1 &
-  fi
-fi
-exit 0
+install -d -m 700 /etc/vps-hardening
+(umask 077 && printf 'TG_BOT_TOKEN=%q\nTG_CHAT_ID=%q\nWEBHOOK_URL=%q\n' \
+  "YOUR_TELEGRAM_BOT_TOKEN" "YOUR_TELEGRAM_CHAT_ID" "" > /etc/vps-hardening/alert.conf)
+chmod 600 /etc/vps-hardening/alert.conf
 ```
 
-Make it executable and link to PAM in `/etc/pam.d/sshd`:
+Install the dispatcher from [`configs/ssh-login-alert.sh`](configs/ssh-login-alert.sh) (the same file `hardening.sh` deploys). It reads `/etc/vps-hardening/alert.conf`, JSON-escapes the login details and sends Telegram, Discord or generic webhook notifications in the background:
 
 ```bash
-chmod 755 /usr/local/bin/ssh-login-alert.sh
+install -m 700 -o root -g root configs/ssh-login-alert.sh /usr/local/bin/ssh-login-alert.sh
 echo "session optional pam_exec.so seteuid /usr/local/bin/ssh-login-alert.sh" >> /etc/pam.d/sshd
 ```
 
-> 💡 Using `session optional` and running curl with trailing `&` ensures notifications are sent asynchronously in the background. If a network outage or API error occurs, legitimate administrator SSH access is never blocked or delayed.
+> 💡 sshd runs the PAM session as root, so the dispatcher can read the `600` config file. Using `session optional` and running curl with a trailing `&` sends notifications asynchronously: a network outage or API error never blocks or delays a legitimate SSH login.
 
 ---
 
+## ⏪ Rollback & Auto-Revert Safety Timer
+
+On its first run, `hardening.sh` saves the original state in `/var/backups/vps_hardening/` (root-only): a `.tar.gz` with the configuration it touches, a `.created` list of files it adds, and a `.state` file with service, UFW, sysctl, `/dev/shm` and default-account states. Later runs keep that snapshot.
+
+```bash
+sudo hardening-rollback            # or: sudo ./rollback.sh / sudo ./hardening.sh --rollback
+sudo hardening-rollback --yes      # non-interactive
+```
+
+In interactive runs a transient systemd timer (`vps-hardening-autorevert`) runs this rollback automatically 10 minutes after the end of the script unless you type `CONFIRM`. To inspect or cancel it manually:
+
+```bash
+systemctl list-timers vps-hardening-autorevert.timer
+sudo systemctl stop vps-hardening-autorevert.timer
+```
+
+---
 
 ## 🔧 Diagnostic Commands
 
@@ -574,6 +546,9 @@ systemctl status auditd
 | Locked out of VPS | Firewall rule or invalid key | Access VPS via Cloud Provider Web VNC Console |
 | Banned by Fail2ban | Repeated failed authentications | `fail2ban-client set sshd unbanip <IP>` |
 | `sysctl: Permission denied` | Shared container VPS (LXC/OpenVZ) | Host manages ASLR/kptr; container profile skips host-restricted sysctl parameters |
-| PAM webhook fails to send | Missing curl or invalid webhook URL | Verify outgoing HTTP connectivity: `curl -fsSL https://www.google.com` |
+| PAM webhook fails to send | Missing curl or invalid webhook URL | Verify outgoing HTTP connectivity: `curl -fsSL https://www.google.com` and check `/etc/vps-hardening/alert.conf` |
+| `-y` run stops with "has no password" | Admin account has no sudo password and none can be asked | Pass `--password-hash "$(openssl passwd -6)"` |
+| Server went back to port 22 on its own | Safety timer expired without `CONFIRM` | Fix the access problem, re-run `hardening.sh` and confirm after testing the new login |
+| New SSH port unreachable but UFW allows it | Provider firewall / security group blocks it | Allow the port in the provider's control panel |
 
 

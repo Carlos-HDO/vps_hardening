@@ -202,13 +202,13 @@ Gravar `hardening_backup_<ts>.state` (formato `chave=valor`) com:
 
 ## Etapa 7 — Documentação (#10)
 
-- [ ] **7.1** Traduzir para inglês as seções do README que ficaram em português: “Configuração de Notificações via Telegram” e “Usabilidade e Flexibilidade Operacional”, incluindo dry-run e rollback.
-- [ ] **7.2** Documentar as flags novas: `--skip-upgrade`, `--password-hash`, `--no-safety-timer` e `--version`.
-- [ ] **7.3** Atualizar a seção de rollback para refletir o comportamento novo (remoção de arquivos e restauração de estado).
-- [ ] **7.4** Adicionar o aviso de firewall do provedor às “Golden Rules”.
-- [ ] **7.5** Atualizar o “Repository Layout” com `plan/`, `tests/`, `SECURITY.md` e `CHANGELOG.md`.
-- [ ] **7.6** Criar `SECURITY.md`: como reportar vulnerabilidades e o escopo do projeto.
-- [ ] **7.7** Revisar o `GUIDE.md` para os mesmos pontos.
+- [x] **7.1** Traduzir para inglês as seções do README que ficaram em português: “Configuração de Notificações via Telegram” e “Usabilidade e Flexibilidade Operacional”, incluindo dry-run e rollback.
+- [x] **7.2** Documentar as flags novas: `--skip-upgrade`, `--password-hash`, `--no-safety-timer` e `--version`.
+- [x] **7.3** Atualizar a seção de rollback para refletir o comportamento novo (remoção de arquivos e restauração de estado).
+- [x] **7.4** Adicionar o aviso de firewall do provedor às “Golden Rules”.
+- [x] **7.5** Atualizar o “Repository Layout” com `plan/`, `tests/`, `SECURITY.md` e `CHANGELOG.md`.
+- [x] **7.6** Criar `SECURITY.md`: como reportar vulnerabilidades e o escopo do projeto.
+- [x] **7.7** Revisar o `GUIDE.md` para os mesmos pontos.
 
 ---
 

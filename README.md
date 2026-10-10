@@ -8,7 +8,7 @@ Applies battle-tested production security standards to transform a stock, intern
 
 ## ⚡ Key Features (The 11 Security Phases)
 
-- **Phase 1 — Base System & Clock Sync**: Non-interactive system updates (`apt-get upgrade`), baseline tool installation (`sudo`, `curl` for minimal Debian/Ubuntu images), timezone configuration, and NTP synchronization.
+- **Phase 1 — Base System & Clock Sync**: Non-interactive system updates (`apt-get upgrade`, skippable with `--skip-upgrade`), baseline tool installation (`sudo`, `curl`, `tmux` for minimal Debian/Ubuntu images), timezone configuration, and NTP synchronization.
 - **Phase 2 — Account Security & Cloud Provider Cleanup**: Creation of a dedicated non-root administrative account with verified `sudo` privileges, lockouts for pre-installed provider accounts (`ubuntu`, `debian`, `admin`), and disabling unverified `authorized_keys`.
 - **Phase 3 — OpenSSH Hardening & Precedence Protection**: Complete disablement of password authentication (`PasswordAuthentication no`) and direct root login (`PermitRootLogin no`), sanitization of main `/etc/ssh/sshd_config` and drop-ins to guarantee OpenSSH first-match rule compliance, migration to a custom high port, resolution of Ubuntu 22.10/24.04 *systemd socket activation* (`ssh.socket`), and syntax verification prior to daemon reload.
 - **Phase 4 — Restrictive Firewall (UFW)**: Default-deny incoming policy (`default deny incoming`), rate-limited SSH access (`ufw limit`) to mitigate scanning, and full IPv6 coverage.
@@ -18,7 +18,9 @@ Applies battle-tested production security standards to transform a stock, intern
 - **Phase 8 — Filesystem & Memory Protection (CIS Benchmark)**: Hardening of shared memory `/dev/shm` with `nodev,nosuid,noexec` flags in `/etc/fstab` and absolute prohibition of process core memory dumps (`limits.d` and `systemd-coredump`).
 - **Phase 9 — Kernel Modules Hardening**: Disabling legacy and attack-prone networking protocols (`dccp`, `sctp`, `rds`, `tipc`, `firewire-core`) in `/etc/modprobe.d/hardening.conf`.
 - **Phase 10 — System Auditing & Intrusion Logging**: Automatic installation and initialization of the `auditd` kernel event auditor, with optional automated **Lynis** comprehensive security benchmark scan.
-- **Phase 11 — Real-Time SSH Login Alerts**: Webhook notification engine integrated into PAM (`/etc/pam.d/sshd`) dispatching instant alerts (Discord / Telegram / Custom webhook) on successful SSH sessions.
+- **Phase 11 — Real-Time SSH Login Alerts**: Webhook notification engine integrated into PAM (`/etc/pam.d/sshd`) dispatching instant alerts (Discord / Telegram / Custom webhook) on successful SSH sessions. Credentials are kept in a root-only file (`/etc/vps-hardening/alert.conf`, mode `600`).
+
+Every run also takes a **first-run rollback snapshot**, can arm an **auto-revert safety timer** while you test the new SSH login, and finishes with an automated **verification suite**.
 
 ---
 
@@ -28,6 +30,8 @@ Applies battle-tested production security standards to transform a stock, intern
 > 1. **Never close your active SSH session** during the hardening process! If an issue occurs, your open session is your lifeline to investigate and resolve it.
 > 2. **Always verify the new connection in a NEW terminal** with your SSH key and credentials before ending the root session.
 > 3. Create a **snapshot / backup** of the VPS in your cloud provider's control panel (Contabo, Hetzner, DigitalOcean, Linode, AWS, etc.) before running security scripts.
+> 4. If your provider has its **own firewall** (Hetzner Cloud Firewall, AWS Security Group, DigitalOcean Cloud Firewall, etc.), allow the new SSH port (default `52211/tcp`) there **before** running the script. UFW cannot open ports in the provider's firewall.
+> 5. In interactive runs, the **safety timer** rolls everything back automatically after 10 minutes unless you type `CONFIRM` once the new login works. Don't confirm before testing in a new terminal.
 
 ---
 
@@ -64,6 +68,13 @@ Or import your public key directly from GitHub (eliminates copy-paste errors):
 sudo ./hardening.sh -u operator -k "gh:carlos-hdo" -p 52211 -a 80,443 -y
 ```
 
+> [!IMPORTANT]
+> With `-y` (or without a terminal, e.g. cloud-init), the script cannot ask for the admin user's sudo password. If the account has no password yet, pass a crypt hash with `--password-hash`; otherwise the run stops **before any change**:
+>
+> ```bash
+> sudo ./hardening.sh -u operator -k "gh:carlos-hdo" --password-hash "$(openssl passwd -6)" -y
+> ```
+
 ### 3. Via Direct Shell Pipe (Curl / Web Bootstrap)
 
 To execute remotely without prior cloning:
@@ -87,8 +98,12 @@ curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main/harde
 | `-p`, `--port` | `<number>` | `52211` | Custom SSH port (range `1024`–`65535`) |
 | `-t`, `--timezone` | `<region>` | `America/Sao_Paulo` | System timezone (e.g. `UTC`, `America/New_York`) |
 | `-a`, `--allow-ports` | `<ports>` | None | Additional incoming ports to allow in UFW (e.g. `80,443,51820/udp`) |
+| `--password-hash` | `'<hash>'` | None | Crypt hash (`openssl passwd -6`) for the admin user's sudo password, applied when the account has none. Required with `-y` in that case |
+| `--safety-timer` | None | on (interactive) | Arm the auto-revert timer even with `-y` |
+| `--no-safety-timer` | None | off (`-y`) | Never arm the auto-revert timer |
+| `--skip-upgrade` | None | `false` | Skip `apt-get upgrade` in Phase 1 (package lists are still refreshed) |
 | `--dry-run` | None | `false` | Simulate actions without making actual changes to the system |
-| `--rollback` | `[archive]` | Latest | Restore previous system configuration from pre-hardening snapshot |
+| `--rollback` | `[archive]` | Original snapshot | Restore the pre-hardening state (delegates to `rollback.sh`) |
 | `--tg-token` | `<token>` | None | Telegram Bot Token from `@BotFather` for login alerts |
 | `--tg-chat` | `<chat_id>` | None | Telegram Chat ID from `@userinfobot` for login alerts |
 | `-w`, `--webhook` | `<url>` | None | Discord / Custom Webhook URL for real-time SSH alerts |
@@ -97,40 +112,42 @@ curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main/harde
 | `-y`, `--yes` | None | `false` | Skip interactive plan confirmation prompt |
 | `-h`, `--help` | None | — | Display help message and options |
 
+Environment variables can replace most flags (useful for automation): `HARDENING_USER`, `HARDENING_SSH_KEY`, `HARDENING_SSH_PORT`, `HARDENING_TIMEZONE`, `HARDENING_ALLOW_PORTS`, `HARDENING_PASSWORD_HASH`, `HARDENING_TG_TOKEN`, `HARDENING_TG_CHAT_ID`, `HARDENING_WEBHOOK_URL`, `HARDENING_RUN_AUDIT`, `HARDENING_SKIP_UPGRADE`, `HARDENING_SAFETY_TIMER` (`true`/`false`) and `HARDENING_SAFETY_TIMER_MINUTES` (default `10`).
+
 ---
 
-## 📱 Configuração de Notificações via Telegram
+## 📱 Telegram Notification Setup
 
-### Como Obter suas Credenciais do Telegram (1 minuto)
+### Getting your Telegram credentials (1 minute)
 
-1. **Criar o Bot**:
-   * Abra o Telegram e procure por [@BotFather](https://t.me/BotFather).
-   * Envie o comando `/newbot`.
-   * Escolha um nome (ex: `VPS Guard`) e um usuário que termine em `bot` (ex: `meu_servidor_alerta_bot`).
-   * O BotFather retornará o seu HTTP API Token (exemplo: `7123456789:ABCdefGhIJKlmNoPQRstuVWXyz`).
+1. **Create the bot**:
+   * Open Telegram and search for [@BotFather](https://t.me/BotFather).
+   * Send `/newbot`.
+   * Pick a name (e.g. `VPS Guard`) and a username ending in `bot` (e.g. `my_server_alert_bot`).
+   * BotFather replies with your HTTP API token (e.g. `7123456789:ABCdefGhIJKlmNoPQRstuVWXyz`).
 
-2. **Obter seu Chat ID**:
-   * Abra o bot [@userinfobot](https://t.me/userinfobot) (ou [@getmyid_bot](https://t.me/getmyid_bot)) no Telegram e envie `/start`.
-   * Copie o seu número de Id (exemplo: `123456789`).
-   * **Importante**: Abra o chat do seu bot recém-criado e clique em **Start** (ou envie um `/start`) para autorizá-lo a enviar mensagens para você.
+2. **Get your Chat ID**:
+   * Open [@userinfobot](https://t.me/userinfobot) (or [@getmyid_bot](https://t.me/getmyid_bot)) and send `/start`.
+   * Copy your numeric Id (e.g. `123456789`).
+   * **Important**: open the chat with your new bot and press **Start** (or send `/start`) so it is allowed to message you.
 
-### 🚀 Como Usar no Script
+### 🚀 Using it with the script
 
-#### Opção A — Pelo Wizard Interativo (Mais Fácil)
-Ao rodar sem argumentos:
+#### Option A — Interactive wizard (easiest)
+Run without arguments:
 ```bash
 sudo ./hardening.sh
 ```
-O assistente exibirá uma pergunta direta para ativar o Telegram:
+The wizard asks whether to enable Telegram:
 ```text
-[*] Real-Time SSH Login Alerts:
+[*] Real-Time SSH Login Alerts (Telegram / Webhook):
 ? Configure instant Telegram alerts on SSH login? [y/N]: y
     → Telegram Bot Token (from @BotFather): 7123456789:ABCdefGhIJKlmNoPQRstuVWXyz
     → Telegram Chat ID (from @userinfobot): 123456789
 ```
 
-#### Opção B — Via Linha de Comando (Flags)
-Você pode passar o token e o chat ID diretamente:
+#### Option B — Command-line flags
+Pass the token and chat ID directly:
 ```bash
 sudo ./hardening.sh \
   -u operator \
@@ -138,11 +155,14 @@ sudo ./hardening.sh \
   -p 52211 \
   --tg-token "7123456789:ABCdefGhIJKlmNoPQRstuVWXyz" \
   --tg-chat "123456789" \
+  --password-hash "$(openssl passwd -6)" \
   -y
 ```
 
-### 📩 O que você receberá no Telegram a cada Login SSH
-Sempre que alguém logar na sua VPS com sucesso (seja você ou qualquer tentativa), o PAM dispara imediatamente a seguinte mensagem formatada:
+The token, chat ID and webhook URL are stored in `/etc/vps-hardening/alert.conf` (`root:root`, mode `600`). The dispatcher `/usr/local/bin/ssh-login-alert.sh` holds no secrets.
+
+### 📩 What you receive on every SSH login
+Whenever someone logs in successfully (you or anyone else), PAM immediately sends:
 
 ```text
 🚨 VPS SSH LOGIN ALERT
@@ -157,47 +177,75 @@ Sempre que alguém logar na sua VPS com sucesso (seja você ou qualquer tentativ
 
 ---
 
-## 🛠️ Usabilidade e Flexibilidade Operacional
+## 🛠️ Operational Flexibility
 
-### 🌐 Liberação de Portas Adicionais (`-a` / `--allow-ports`)
-Por padrão, o UFW fecha todas as conexões de entrada e permite apenas o SSH customizado. Se a VPS já executa serviços em produção (Nginx, Caddy, Docker, Wireguard, bancos de dados), você pode especificar quais portas manter abertas:
+### 🌐 Allowing additional ports (`-a` / `--allow-ports`)
+By default UFW blocks all incoming connections except the custom SSH port. If the VPS already runs production services (Nginx, Caddy, Docker, WireGuard, databases), list the ports to keep open:
 
 ```bash
-# Permite HTTP, HTTPS e VPN WireGuard (UDP) além da porta SSH
+# Allow HTTP, HTTPS and WireGuard (UDP) in addition to SSH
 sudo ./hardening.sh -u operator -k "ssh-ed25519 ..." -p 52211 -a 80,443,51820/udp -y
 ```
-> **No Wizard Interativo**: o script pergunta automaticamente `? Additional incoming ports to allow in UFW (e.g. 80,443,51820/udp) [default: none]:`.
+> **Interactive wizard**: the script asks `? Additional incoming ports to allow in UFW (e.g. 80,443,51820/udp) [none]:`.
+
+If UFW is **already active** when the script runs, the new SSH port is opened before sshd moves to it, so the current firewall never blocks the new port.
 
 ---
 
-### 🔍 Modo Simulação / Dry-Run (`--dry-run`)
-Permite ao sysadmin inspecionar detalhadamente cada ação, comando e arquivo que seria alterado ou criado sem tocar no sistema operacional:
+### 🔍 Dry-run mode (`--dry-run`)
+Lists every action, file and setting a real run would apply, phase by phase, without touching the system (root is not required):
 
 ```bash
 sudo ./hardening.sh --dry-run
-# Ou combinando com seus parâmetros:
+# Or with your parameters:
 sudo ./hardening.sh -u operator -k "ssh-ed25519 ..." -p 52211 -a 80,443 --dry-run
 ```
-O script exibirá o plano completo com avisos `[DRY-RUN] Would create user...`, `[DRY-RUN] Would configure UFW...` e sairá com status de sucesso (`exit 0`).
+The output shows `[DRY-RUN] Would ...` lines for the snapshot, all 11 phases, the safety timer and the verification suite, then exits with status `0`.
 
 ---
 
-### ⏪ Mecanismo de Rollback Instantâneo (`rollback.sh` ou `--rollback`)
-Antes de executar qualquer modificação no sistema, o script cria automaticamente um snapshot compactado dos diretórios críticos em `/var/backups/vps_hardening/hardening_backup_<timestamp>.tar.gz` e cria um atalho `latest.tar.gz`.
+### ⏱️ Auto-revert safety timer
+Before restarting SSH, an interactive run arms a transient systemd timer (`vps-hardening-autorevert`) that runs `hardening-rollback --yes`. At the end of the run the timer is reset to **10 minutes** and the script waits:
 
-Se houver necessidade de restaurar o estado original:
+```text
+  ⏱️  SAFETY TIMER ACTIVE — the system will be rolled back automatically in 10 minute(s).
+? Type CONFIRM to keep the changes (Enter = leave timer running):
+```
+
+1. Test the login in a **new terminal** (`ssh -i ~/.ssh/id_ed25519 -p 52211 operator@VPS_IP`).
+2. If it works, type `CONFIRM`. If you lose access, do nothing: the server reverts to its original SSH configuration by itself.
+
+You can also confirm later with `sudo systemctl stop vps-hardening-autorevert.timer`. The timer is **on by default in interactive runs** and **off with `-y`** (nobody is there to confirm). Use `--safety-timer` / `--no-safety-timer` to override, or `HARDENING_SAFETY_TIMER_MINUTES` to change the window.
+
+---
+
+### ⏪ Rollback (`hardening-rollback`, `rollback.sh` or `--rollback`)
+On the **first run**, before any change, the script saves in `/var/backups/vps_hardening/` (root-only, mode `700`):
+
+| File | Content |
+| :--- | :--- |
+| `hardening_backup_<timestamp>.tar.gz` | Original `/etc/ssh`, `/etc/pam.d/sshd`, `/etc/sysctl.d`, `/etc/fstab`, `/etc/ufw`, `/etc/fail2ban`, `/etc/security/limits.d`, `/etc/modprobe.d`, `/etc/modules-load.d`, systemd coredump drop-ins, alert files |
+| `hardening_backup_<timestamp>.created` | Files and directories the run creates (deleted on rollback) |
+| `hardening_backup_<timestamp>.state` | UFW status, ssh/ssh.socket/fail2ban/auditd/unattended-upgrades unit states, original sysctl values, `/dev/shm` options, default cloud accounts |
+| `latest.tar.gz` | Link to the original snapshot |
+
+Later runs **keep** this snapshot, so a rollback always returns to the state before the first hardening.
 
 ```bash
-# Método 1: Utilitário dedicado de rollback (restaura o snapshot mais recente)
-sudo ./rollback.sh
+# Installed helper (available even when the script was piped from curl)
+sudo hardening-rollback
 
-# Método 2: Via hardening.sh
+# From the cloned repository
+sudo ./rollback.sh
 sudo ./hardening.sh --rollback
 
-# Método 3: Restaurar um backup timestamped específico
-sudo ./rollback.sh /var/backups/vps_hardening/hardening_backup_20261001_180000.tar.gz
+# Non-interactive, or a specific archive
+sudo ./rollback.sh --yes /var/backups/vps_hardening/hardening_backup_20261001_180000.tar.gz
 ```
-O rollback restaura `/etc/ssh`, `/etc/ufw`, `/etc/fail2ban`, `/etc/sysctl.d`, `/etc/pam.d/sshd` e reativa os serviços para o estado anterior de forma transparente e segura.
+
+The rollback restores the archived files, deletes the files the hardening created (`00-hardening.conf`, `99-hardening.conf`, `jail.local`, the modprobe/limits/coredump drop-ins, alert files, …), restores the original sysctl values, `/dev/shm` options, default cloud accounts and service states, disables UFW if it was not active before, and only then restarts SSH (after `sshd -t` succeeds), including Ubuntu's `ssh.socket` activation.
+
+It **keeps** the admin user and the packages installed by the hardening (ufw, fail2ban, auditd, unattended-upgrades, tmux, lynis). Snapshots created by older versions (without `.created`/`.state`) only restore files.
 
 ---
 
@@ -256,21 +304,26 @@ sudo fail2ban-client set sshd unbanip YOUR_IP
 vps_hardening/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                # Automated CI pipeline (ShellCheck + Multi-OS Docker matrix)
+│       └── ci.yml                # CI: ShellCheck, config drift, dry-run matrix, E2E on Ubuntu runners
 ├── hardening.sh                  # Main hardening and automation script
 ├── verify.sh                     # Automated test & verification audit suite (Phases 1-11)
-├── rollback.sh                   # Emergency rollback and system restore utility
+├── rollback.sh                   # Rollback utility (installed as hardening-rollback)
 ├── quick-install.sh              # Lightweight bootstrap wrapper for curl / pipelines
 ├── GUIDE.md                      # Technical in-depth reference guide (Phases 1-11)
 ├── README.md                     # Documentation and usage guide
+├── SECURITY.md                   # How to report vulnerabilities
 ├── LICENSE                       # MIT License
-└── configs/
+├── plan/
+│   └── PLAN.md                   # Remediation plan and its status
+├── tests/
+│   └── check-config-drift.sh     # CI check: configs/ templates == copies embedded in hardening.sh
+└── configs/                      # Reference templates for manual hardening (kept in sync by CI)
     ├── 00-hardening.conf         # OpenSSH hardening template
     ├── jail.local                # Fail2ban configuration template
     ├── 99-hardening.conf         # Kernel sysctl parameters template (with TCP BBR)
     ├── hardening-modprobe.conf   # Obsolete kernel protocols blacklist template
     ├── 10-hardening-coredump.conf# Core dump prevention limits template
-    └── ssh-login-alert.sh        # PAM SSH alert notification dispatcher template
+    └── ssh-login-alert.sh        # PAM SSH alert dispatcher (reads /etc/vps-hardening/alert.conf)
 ```
 
 ---
