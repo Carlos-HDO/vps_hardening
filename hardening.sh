@@ -651,100 +651,124 @@ if [ "$ASSUME_YES" = false ]; then
 fi
 
 run_dry_run_simulation() {
+  local p p_clean
   echo -e "${C_YELLOW}${C_BOLD}==============================================================================${C_RESET}"
   echo -e "${C_YELLOW}${C_BOLD}   ⚠️  SIMULATION MODE (DRY-RUN) ACTIVE — NO SYSTEM CHANGES WILL BE MADE       ${C_RESET}"
   echo -e "${C_YELLOW}${C_BOLD}==============================================================================${C_RESET}"
   echo ""
   echo -e "${C_CYAN}${C_BOLD}[*] Running full pre-flight simulation of all 11 hardening phases...${C_RESET}"
   echo ""
-  
+
+  echo -e "${C_BOLD}Pre-flight: Rollback Snapshot & Helper Commands${C_RESET}"
+  if [ -e "$BACKUP_DIR/latest.tar.gz" ]; then
+    echo -e "  [DRY-RUN] Original snapshot already exists ($(readlink -f "$BACKUP_DIR/latest.tar.gz")) — would keep it"
+  else
+    echo -e "  [DRY-RUN] Would create root-only snapshot ${BACKUP_DIR}/hardening_backup_<timestamp>.tar.gz"
+    echo -e "            plus .created (files this run creates) and .state (services, UFW, sysctl, accounts)"
+  fi
+  echo -e "  [DRY-RUN] Would install /usr/local/bin/verify-hardening and /usr/local/sbin/hardening-rollback"
+  echo ""
+
   echo -e "${C_BOLD}Phase 1: Base System & Time Synchronization${C_RESET}"
-  echo -e "  [DRY-RUN] Would update package lists: apt-get update -qq"
-  echo -e "  [DRY-RUN] Would ensure essential dependencies: apt-get install -y sudo curl"
-  echo -e "  [DRY-RUN] Would upgrade existing packages: apt-get upgrade -y"
+  echo -e "  [DRY-RUN] Would update package lists: apt-get update"
+  if [ "$SKIP_UPGRADE" = true ]; then
+    echo -e "  [DRY-RUN] Package upgrade skipped (--skip-upgrade)"
+  else
+    echo -e "  [DRY-RUN] Would upgrade installed packages: apt-get upgrade -y"
+  fi
+  echo -e "  [DRY-RUN] Would ensure baseline tools: apt-get install -y sudo curl tmux"
   echo -e "  [DRY-RUN] Would configure system timezone to '${TIMEZONE}' via timedatectl"
   echo -e "  [DRY-RUN] Would enable network time synchronization (NTP)"
   echo ""
 
-  echo -e "${C_BOLD}Phase 2: Administrative User Provisioning & Neutralization${C_RESET}"
+  echo -e "${C_BOLD}Phase 2: Administrative User & Cloud Account Neutralization${C_RESET}"
   echo -e "  [DRY-RUN] Would verify or create user '${NOVO_USUARIO}' with bash shell"
-  echo -e "  [DRY-RUN] Would append '${NOVO_USUARIO}' to sudo group (usermod -aG sudo ${NOVO_USUARIO})"
-  echo -e "  [DRY-RUN] Would enforce password setup for sudo authentication"
-  echo -e "  [DRY-RUN] Would neutralize default accounts (ubuntu, debian, admin, centos):"
+  echo -e "  [DRY-RUN] Would add '${NOVO_USUARIO}' to the sudo group (usermod -aG sudo ${NOVO_USUARIO})"
+  if [ -n "$PASSWORD_HASH" ]; then
+    echo -e "  [DRY-RUN] Would set the sudo password from --password-hash if the account has none"
+  else
+    echo -e "  [DRY-RUN] Would prompt for a sudo password if the account has none"
+  fi
+  echo -e "  [DRY-RUN] Would neutralize default accounts (${DEFAULT_CLOUD_ACCOUNTS[*]}):"
   echo -e "            - Lock passwords (passwd -l)"
   echo -e "            - Set shell to /usr/sbin/nologin"
   echo -e "            - Rename .ssh/authorized_keys to authorized_keys.disabled"
   echo ""
 
-  echo -e "${C_BOLD}Phase 3: OpenSSH Cryptographic & Protocol Hardening${C_RESET}"
-  echo -e "  [DRY-RUN] Would create ${NOVO_USUARIO} SSH directory: ~/.ssh (mode 700)"
-  echo -e "  [DRY-RUN] Would install public key in ~/.ssh/authorized_keys (mode 600)"
-  echo -e "  [DRY-RUN] Would backup /etc/ssh/sshd_config to /etc/ssh/sshd_config.bak"
-  echo -e "  [DRY-RUN] Would sanitize /etc/ssh/sshd_config and neutralize overriding directives"
-  echo -e "  [DRY-RUN] Would deploy drop-in configuration /etc/ssh/sshd_config.d/00-hardening.conf:"
+  echo -e "${C_BOLD}Phase 3: OpenSSH Hardening${C_RESET}"
+  echo -e "  [DRY-RUN] Would install public key(s) in ~${NOVO_USUARIO}/.ssh/authorized_keys (dir 700, file 600)"
+  echo -e "  [DRY-RUN] Would back up /etc/ssh/sshd_config to /etc/ssh/sshd_config.bak (first run only)"
+  echo -e "  [DRY-RUN] Would comment out conflicting directives in sshd_config and sshd_config.d/*.conf (*.bak backups)"
+  echo -e "  [DRY-RUN] Would write /etc/ssh/sshd_config.d/00-hardening.conf:"
   echo -e "            - Port ${SSH_PORT}"
   echo -e "            - PermitRootLogin no"
-  echo -e "            - PasswordAuthentication no"
+  echo -e "            - PasswordAuthentication no / PermitEmptyPasswords no / KbdInteractiveAuthentication no"
   echo -e "            - PubkeyAuthentication yes"
-  echo -e "            - MaxAuthTries 3"
   echo -e "            - X11Forwarding no"
+  echo -e "            - MaxAuthTries 3 / LoginGraceTime 20"
   echo -e "            - AllowUsers ${NOVO_USUARIO}"
-  echo -e "  [DRY-RUN] Would test OpenSSH syntax: sshd -t"
-  echo -e "  [DRY-RUN] Would restart ssh/sshd systemd service"
+  echo -e "            - ClientAliveInterval 300 / ClientAliveCountMax 2"
+  echo -e "  [DRY-RUN] Would validate syntax with 'sshd -t' (aborts on error)"
+  echo -e "  [DRY-RUN] If UFW is already active, would open ${SSH_PORT}/tcp before restarting SSH"
+  if [ "$SAFETY_TIMER" = true ]; then
+    echo -e "  [DRY-RUN] Would arm the auto-revert safety timer (systemd-run ${SAFETY_TIMER_UNIT})"
+  fi
+  echo -e "  [DRY-RUN] Would disable ssh.socket (socket activation) and restart ssh.service"
   echo ""
 
-  echo -e "${C_BOLD}Phase 4: UFW Stateful Firewall Automation${C_RESET}"
-  echo -e "  [DRY-RUN] Would ensure ufw package is installed"
-  echo -e "  [DRY-RUN] Would configure default policies: incoming: deny, outgoing: allow, routed: deny"
-  echo -e "  [DRY-RUN] Would rate-limit SSH access on custom port: ufw limit ${SSH_PORT}/tcp"
+  echo -e "${C_BOLD}Phase 4: Stateful Firewall (UFW)${C_RESET}"
+  echo -e "  [DRY-RUN] Would install ufw and enable IPv6 rules (/etc/default/ufw)"
+  echo -e "  [DRY-RUN] Would set default policies: deny incoming, allow outgoing"
+  echo -e "  [DRY-RUN] Would rate-limit SSH: ufw limit ${SSH_PORT}/tcp"
   if [ -n "$ALLOW_PORTS" ]; then
     IFS=',' read -ra ADDR <<< "$ALLOW_PORTS"
     for p in "${ADDR[@]}"; do
       p_clean=$(echo "$p" | tr -d '[:space:]')
-      [ -n "$p_clean" ] && echo -e "  [DRY-RUN] Would open additional firewall port: ufw allow ${p_clean}"
+      [ -n "$p_clean" ] && echo -e "  [DRY-RUN] Would allow additional port: ufw allow ${p_clean}"
     done
   fi
   echo -e "  [DRY-RUN] Would enable firewall: ufw --force enable"
   echo ""
 
-  echo -e "${C_BOLD}Phase 5: Fail2ban Intrusion Prevention System${C_RESET}"
-  echo -e "  [DRY-RUN] Would install fail2ban package"
-  echo -e "  [DRY-RUN] Would configure /etc/fail2ban/jail.d/00-ssh-hardening.local:"
-  echo -e "            - jail: sshd, port: ${SSH_PORT}, maxretry: 5, findtime: 10m, bantime: 1h"
-  echo -e "  [DRY-RUN] Would enable and start fail2ban systemd service"
+  echo -e "${C_BOLD}Phase 5: Intrusion Prevention & Brute-Force Defense (Fail2ban)${C_RESET}"
+  echo -e "  [DRY-RUN] Would install fail2ban"
+  echo -e "  [DRY-RUN] Would write /etc/fail2ban/jail.local:"
+  echo -e "            - [DEFAULT] backend: systemd, ignoreip: loopback + RFC1918, bantime 1h, findtime 10m, maxretry 4"
+  echo -e "            - [DEFAULT] progressive bans: bantime.increment, factor 2, max 7 days"
+  echo -e "            - [sshd] port: ${SSH_PORT}, maxretry: 3, findtime: 5m, bantime: 2h"
+  echo -e "  [DRY-RUN] Would enable and restart the fail2ban service"
   echo ""
 
-  echo -e "${C_BOLD}Phase 6: Kernel Sysctl Network & Memory Hardening${C_RESET}"
-  echo -e "  [DRY-RUN] Detected virtualization hypervisor: ${VIRT_ENV}"
-  echo -e "  [DRY-RUN] Would deploy /etc/sysctl.d/99-hardening.conf:"
-  echo -e "            - TCP SYN cookies enabled (DoS mitigation)"
-  echo -e "            - IP spoofing / reverse-path filtering (rp_filter = 1)"
-  echo -e "            - ICMP redirect acceptance/sending disabled"
-  echo -e "            - Source routing disabled"
-  echo -e "            - Address space layout randomization (ASLR = 2)"
-  echo -e "            - Core dump suid restrictions (fs.suid_dumpable = 0)"
-  echo -e "            - TCP BBR congestion control & fair queuing (FQ) enabled"
+  echo -e "${C_BOLD}Phase 6: Kernel Hardening (sysctl) & Network Optimization${C_RESET}"
+  echo -e "  [DRY-RUN] Detected virtualization: ${VIRT_ENV} ($([ "$IS_CONTAINER" = true ] && echo "container profile" || echo "full profile"))"
+  echo -e "  [DRY-RUN] Would write /etc/sysctl.d/99-hardening.conf:"
+  echo -e "            - Source routing and ICMP redirects disabled"
+  echo -e "            - Reverse-path filtering (rp_filter = 1) and martian logging"
+  echo -e "            - TCP SYN cookies, broadcast/bogus ICMP ignored"
+  echo -e "            - fs.suid_dumpable = 0"
+  if [ "$IS_CONTAINER" = false ]; then
+    echo -e "            - ASLR (randomize_va_space = 2), kptr_restrict = 2, dmesg_restrict = 1"
+    echo -e "            - TCP BBR congestion control & fair queuing (FQ), tcp_bbr in /etc/modules-load.d/bbr.conf"
+  else
+    echo -e "            - TCP BBR & FQ only if the host kernel offers bbr"
+  fi
   echo -e "  [DRY-RUN] Would load kernel parameters: sysctl --system"
   echo ""
 
-  echo -e "${C_BOLD}Phase 7: Automated Security Updates (Unattended-Upgrades)${C_RESET}"
+  echo -e "${C_BOLD}Phase 7: Automatic Security Updates (Unattended-Upgrades)${C_RESET}"
   echo -e "  [DRY-RUN] Would install unattended-upgrades and apt-listchanges"
-  echo -e "  [DRY-RUN] Would configure /etc/apt/apt.conf.d/20auto-upgrades for daily updates"
-  echo -e "  [DRY-RUN] Would restart unattended-upgrades systemd service"
+  echo -e "  [DRY-RUN] Would write /etc/apt/apt.conf.d/20auto-upgrades (daily lists update + unattended upgrade)"
+  echo -e "  [DRY-RUN] Would enable the unattended-upgrades service"
   echo ""
 
-  echo -e "${C_BOLD}Phase 8: Shared Memory & /tmp Hardening (CIS Benchmark)${C_RESET}"
-  echo -e "  [DRY-RUN] Would configure /dev/shm in /etc/fstab with nodev,nosuid,noexec"
-  echo -e "  [DRY-RUN] Would remount /dev/shm with restrictive mount options: mount -o remount,nodev,nosuid,noexec /dev/shm"
+  echo -e "${C_BOLD}Phase 8: Filesystem & Memory Protection (CIS Benchmark)${C_RESET}"
+  echo -e "  [DRY-RUN] Would set /dev/shm to nodev,nosuid,noexec in /etc/fstab and remount it"
+  echo -e "  [DRY-RUN] Would write /etc/security/limits.d/10-hardening-coredump.conf (* hard/soft core 0)"
+  echo -e "  [DRY-RUN] Would write /etc/systemd/coredump.conf.d/disable.conf (Storage=none, ProcessSizeMax=0)"
   echo ""
 
-  echo -e "${C_BOLD}Phase 9: Process Core Dump Disablement${C_RESET}"
-  echo -e "  [DRY-RUN] Would deploy /etc/security/limits.d/10-hardening-coredump.conf (* hard core 0)"
-  echo -e "  [DRY-RUN] Would configure /etc/systemd/coredump.conf (Storage=none, ProcessSizeMax=0)"
-  echo ""
-
-  echo -e "${C_BOLD}Phase 10: Legacy Kernel Network Protocols Blacklist${C_RESET}"
-  echo -e "  [DRY-RUN] Would deploy /etc/modprobe.d/hardening.conf:"
+  echo -e "${C_BOLD}Phase 9: Legacy Network Protocols Blacklist (Modprobe)${C_RESET}"
+  echo -e "  [DRY-RUN] Would write /etc/modprobe.d/hardening.conf:"
   echo -e "            - install dccp /bin/true"
   echo -e "            - install sctp /bin/true"
   echo -e "            - install rds /bin/true"
@@ -752,51 +776,43 @@ run_dry_run_simulation() {
   echo -e "            - install firewire-core /bin/true"
   echo ""
 
-  echo -e "${C_BOLD}Phase 11: Security Auditing (Auditd & Lynis)${C_RESET}"
-  echo -e "  [DRY-RUN] Would install and activate auditd service"
+  echo -e "${C_BOLD}Phase 10: System Security Auditing (Auditd & Lynis)${C_RESET}"
+  echo -e "  [DRY-RUN] Would install, enable and start auditd"
   if [ "$RUN_AUDIT" = true ]; then
-    echo -e "  [DRY-RUN] Would install Lynis and run automated security benchmark: lynis audit system --quick"
+    echo -e "  [DRY-RUN] Would install Lynis and run: lynis audit system --quick (report: /var/log/lynis-hardening-report.txt)"
   else
     echo -e "  [DRY-RUN] Lynis audit scan skipped (use --audit to enable)"
   fi
   echo ""
 
   if { [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; } || [ -n "$WEBHOOK_URL" ]; then
-    echo -e "${C_BOLD}Phase 11: Real-Time SSH Login Alerts${C_RESET}"
-    echo -e "  [DRY-RUN] Would install dispatcher script: /usr/local/bin/ssh-login-alert.sh"
+    echo -e "${C_BOLD}Phase 11: Real-Time SSH Login Alerts (PAM)${C_RESET}"
+    echo -e "  [DRY-RUN] Would store credentials in /etc/vps-hardening/alert.conf (root only, mode 600)"
+    echo -e "  [DRY-RUN] Would install dispatcher /usr/local/bin/ssh-login-alert.sh (root only, mode 700)"
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-      echo -e "  [DRY-RUN] Notification Provider: Telegram (Chat ID: ${TG_CHAT_ID})"
+      echo -e "  [DRY-RUN] Notification provider: Telegram (Chat ID: ${TG_CHAT_ID})"
     else
-      echo -e "  [DRY-RUN] Notification Provider: Webhook (${WEBHOOK_URL:0:30}...)"
+      echo -e "  [DRY-RUN] Notification provider: Webhook (${WEBHOOK_URL:0:30}...)"
     fi
-    echo -e "  [DRY-RUN] Would attach asynchronous PAM session hook to /etc/pam.d/sshd"
-    echo ""
+    echo -e "  [DRY-RUN] Would append a pam_exec session hook to /etc/pam.d/sshd (backup: /etc/pam.d/sshd.bak)"
   else
     echo -e "${C_BOLD}Phase 11: Real-Time SSH Login Alerts (Optional)${C_RESET}"
-    echo -e "  [DRY-RUN] Not configured — If Telegram (--tg-token / --tg-chat) or Webhook (--webhook) is not provided, this step will not be activated."
-    echo ""
+    echo -e "  [DRY-RUN] Not configured — provide --tg-token/--tg-chat or --webhook to enable it."
   fi
+  echo ""
+
+  echo -e "${C_BOLD}Post-run${C_RESET}"
+  if [ "$RUN_VERIFY" = true ]; then
+    echo -e "  [DRY-RUN] Would run the verification suite: verify-hardening --port ${SSH_PORT} --user ${NOVO_USUARIO}"
+  fi
+  if [ "$SAFETY_TIMER" = true ]; then
+    echo -e "  [DRY-RUN] Would reset the safety timer to ${SAFETY_TIMER_MINUTES} min and wait for you to type CONFIRM"
+  fi
+  echo ""
 
   echo -e "${C_BOLD}==============================================================================${C_RESET}"
   echo -e "${C_YELLOW}${C_BOLD}                   ✔ DRY-RUN SIMULATION COMPLETED!                           ${C_RESET}"
   echo -e "${C_BOLD}==============================================================================${C_RESET}"
-  echo ""
-  echo -e "  ${C_BOLD}Simulated Hardening Baseline:${C_RESET}"
-  echo -e "    - Administrative User: ${NOVO_USUARIO} (sudo member, public key deployed)"
-  echo -e "    - Hardened SSH Port:   ${SSH_PORT} (root login: no, password auth: no)"
-  echo -e "    - UFW Firewall:        default-deny, limit port ${SSH_PORT}$([ -n "$ALLOW_PORTS" ] && echo ", allow: ${ALLOW_PORTS}")"
-  echo -e "    - Fail2ban:            sshd jail on port ${SSH_PORT}"
-  echo -e "    - Kernel sysctl:       security profile for '${VIRT_ENV}' hypervisor"
-  echo -e "    - Network throughput:  TCP BBR Congestion Control & Fair Queuing (FQ)"
-  echo -e "    - Shared Memory:       /dev/shm nodev,nosuid,noexec"
-  echo -e "    - Process coredumps:   disabled in limits and systemd"
-  echo -e "    - Kernel protocols:    dccp, sctp, rds, tipc, firewire-core disabled"
-  echo -e "    - System auditing:     auditd active$([ "$RUN_AUDIT" = true ] && echo ", Lynis security benchmark scan")"
-  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-    echo -e "    - Telegram alerts:     configured for Chat ID ${TG_CHAT_ID}"
-  elif [ -n "$WEBHOOK_URL" ]; then
-    echo -e "    - SSH login alerts:    configured via webhook"
-  fi
   echo ""
   echo -e "  ${C_GREEN}Zero changes were made to your system.${C_RESET}"
   echo -e "  To execute hardening for real, re-run without the --dry-run flag."
@@ -823,7 +839,7 @@ log_info "Starting hardening process..."
 # ==================================================================
 echo ""
 log_step "Phase 1 — Base System & Time Synchronization"
-log_info "Objective: Update package repositories, install essential utilities (sudo, curl), and synchronize clock via NTP."
+log_info "Objective: Update package repositories, install essential utilities (sudo, curl, tmux), and synchronize clock via NTP."
 
 if [ "$SKIP_UPGRADE" = true ]; then
   log_step "1.1 Updating package lists (package upgrade skipped via --skip-upgrade)..."
@@ -835,11 +851,11 @@ else
   log_success "Installed packages upgraded."
 fi
 
-if command -v sudo >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
-  log_success "1.2 Baseline tools (sudo, curl) are already installed. Skipping..."
+if command -v sudo >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && command -v tmux >/dev/null 2>&1; then
+  log_success "1.2 Baseline tools (sudo, curl, tmux) are already installed. Skipping..."
 else
-  log_step "1.2 Installing baseline packages (sudo, curl)..."
-  apt-get install -y -qq sudo curl
+  log_step "1.2 Installing baseline packages (sudo, curl, tmux)..."
+  apt-get install -y -qq sudo curl tmux
 fi
 
 CURRENT_TZ="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
@@ -1146,8 +1162,8 @@ fi
 if [ "$PHASE5_ALREADY_CONFIGURED" = true ]; then
   log_success "Phase 5: Fail2ban is already active and configured at standard monitoring port $SSH_PORT. Skipping..."
 else
-  log_step "5. Installing and configuring fail2ban and tmux..."
-  apt-get install -y -qq fail2ban tmux
+  log_step "5. Installing and configuring fail2ban..."
+  apt-get install -y -qq fail2ban
 
   cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]

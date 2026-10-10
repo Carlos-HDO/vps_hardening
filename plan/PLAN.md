@@ -160,18 +160,18 @@ Gravar `hardening_backup_<ts>.state` (formato `chave=valor`) com:
 
 ## Etapa 5 — Alinhar o dry-run (#8)
 
-### [ ] 5.1 Corrigir os textos
+### [x] 5.1 Corrigir os textos
 - **Onde:** `hardening.sh:483-636`. Bater cada linha com a execução real:
   - Fail2ban: é `/etc/fail2ban/jail.local`, não `jail.d/00-ssh-hardening.local`, com `maxretry 3`, `findtime 300` e `bantime 7200` no jail sshd, mais o incremento progressivo.
   - A Fase 5 também instala o `tmux`. Ou o dry-run passa a mencionar isso, ou (melhor) o `tmux` sai da fase, porque não tem relação com o fail2ban.
   - O SSH também grava `KbdInteractiveAuthentication no`, `LoginGraceTime 20`, `ClientAliveInterval 300` e `ClientAliveCountMax 2`.
   - Coredump: o arquivo real é `/etc/systemd/coredump.conf.d/disable.conf`, não `/etc/systemd/coredump.conf`.
 
-### [ ] 5.2 Mesma numeração de fases
+### [x] 5.2 Mesma numeração de fases
 - 1 Base · 2 Usuário · 3 SSH · 4 UFW · 5 Fail2ban · 6 sysctl · 7 Unattended · 8 `/dev/shm` + coredump · 9 modprobe · 10 auditd/Lynis · 11 Alertas.
 - Hoje o dry-run usa 8 = shm, 9 = coredump, 10 = modprobe e tem duas Fases 11.
 
-### [ ] 5.3 Mostrar o snapshot e o timer
+### [x] 5.3 Mostrar o snapshot e o timer
 - O dry-run deve listar os itens novos das Etapas 3 e 4: o snapshot, o manifesto e o timer de reversão.
 
 **Teste:** comparar, lado a lado, a saída do `--dry-run` com a de uma execução real na VM.
