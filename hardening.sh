@@ -45,7 +45,7 @@ read_input() {
   local default_val="${3:-}"
   local value=""
 
-  if [ -c /dev/tty ]; then
+  if { : < /dev/tty; } 2>/dev/null; then
     read -r -p "$(echo -e "$prompt")" value < /dev/tty || true
   else
     read -r -p "$(echo -e "$prompt")" value || true
@@ -54,23 +54,23 @@ read_input() {
   if [ -z "$value" ] && [ -n "$default_val" ]; then
     value="$default_val"
   fi
-  eval "$varname=\"$value\""
+  printf -v "$varname" '%s' "$value"
 }
 
 # ------------------------------------------------------------------
 # Quick Help Check (-h / --help)
 # ------------------------------------------------------------------
-for arg in "$@"; do
-  if [ "$arg" = "-h" ] || [ "$arg" = "--help" ]; then
-    cat <<EOF
+show_help() {
+  cat <<EOF
 Usage: sudo $0 [options] or sudo $0 <user> "<ssh_key>" [port] [timezone]
 
 Options:
   -u, --user <username>       Name of the new administrative user
-  -k, --key "<ssh_key>"       Authorized public SSH key (ed25519, rsa, ecdsa)
+  -k, --key "<ssh_key>"       Authorized public SSH key (raw string, gh:username, or URL)
   -p, --port <port>           Custom SSH port (1024-65535, default: 52211)
   -t, --timezone <tz>         System timezone (e.g., UTC, America/New_York, America/Sao_Paulo)
   -a, --allow-ports <ports>   Additional incoming ports to allow in UFW (e.g. 80,443,51820/udp)
+  --skip-upgrade              Skip 'apt-get upgrade' of installed packages in Phase 1
   --dry-run                   Simulate actions without making actual changes to the system
   --rollback [archive]        Restore system configuration from pre-hardening snapshot
   --tg-token <token>          Telegram Bot Token (from @BotFather) for login alerts
@@ -87,7 +87,12 @@ Examples:
   sudo $0 --dry-run           # Test run simulation
   sudo $0 --rollback          # Restore previous configuration from latest backup
 EOF
-    exit 0
+  exit 0
+}
+
+for arg in "$@"; do
+  if [ "$arg" = "-h" ] || [ "$arg" = "--help" ]; then
+    show_help
   fi
 done
 
@@ -126,6 +131,8 @@ TG_CHAT_ID="${HARDENING_TG_CHAT_ID:-}"
 WEBHOOK_URL="${HARDENING_WEBHOOK_URL:-}"
 RUN_AUDIT="${HARDENING_RUN_AUDIT:-false}"
 RUN_VERIFY=true
+SKIP_UPGRADE="${HARDENING_SKIP_UPGRADE:-false}"
+LYNIS_SCORE="N/A"
 ASSUME_YES=false
 ROLLBACK_SNAPSHOT_PATH=""
 IS_CONTAINER=false
@@ -152,35 +159,6 @@ detect_virtualization() {
   fi
 }
 detect_virtualization
-
-show_help() {
-  cat <<EOF
-Usage: sudo $0 [options] or sudo $0 <user> "<ssh_key>" [port] [timezone]
-
-Options:
-  -u, --user <username>       Name of the new administrative user
-  -k, --key "<ssh_key>"       Authorized public SSH key (raw string, gh:username, or URL)
-  -p, --port <port>           Custom SSH port (1024-65535, default: 52211)
-  -t, --timezone <tz>         System timezone (e.g., UTC, America/New_York, America/Sao_Paulo)
-  -a, --allow-ports <ports>   Additional incoming ports to allow in UFW (e.g. 80,443,51820/udp)
-  --dry-run                   Simulate actions without making actual changes to the system
-  --rollback [archive]        Restore system configuration from pre-hardening snapshot
-  --tg-token <token>          Telegram Bot Token (from @BotFather) for login alerts
-  --tg-chat <chat_id>         Telegram Chat ID (from @userinfobot) for login alerts
-  -w, --webhook <url>         Discord/Custom Webhook URL for real-time SSH login alerts
-  --audit, --lynis            Run Lynis security audit scan after hardening
-  --no-verify                 Skip automatic post-hardening verification tests
-  -y, --yes                   Skip interactive confirmation prompt
-  -h, --help                  Display this help message
-
-Examples:
-  sudo $0 operator "ssh-ed25519 AAAAC3... vps-access" 52211
-  sudo $0 -u operator -k "ssh-ed25519 AAAAC3..." -p 52211 -a 80,443 --tg-token "..." --tg-chat "..." -y
-  sudo $0 --dry-run           # Test run simulation
-  sudo $0 --rollback          # Restore previous configuration from latest backup
-EOF
-  exit 0
-}
 
 # ------------------------------------------------------------------
 # Rollback Implementation
@@ -285,6 +263,7 @@ if [ "$#" -gt 0 ]; then
         -p|--port)          SSH_PORT="$2"; shift 2 ;;
         -t|--timezone)      TIMEZONE="$2"; shift 2 ;;
         -a|--allow-ports)   ALLOW_PORTS="$2"; shift 2 ;;
+        --skip-upgrade)     SKIP_UPGRADE=true; shift 1 ;;
         --dry-run)          DRY_RUN=true; shift 1 ;;
         --rollback)
           DO_ROLLBACK=true
@@ -302,7 +281,7 @@ if [ "$#" -gt 0 ]; then
         --no-verify)        RUN_VERIFY=false; shift 1 ;;
         -y|--yes)           ASSUME_YES=true; shift 1 ;;
         -h|--help)          show_help ;;
-        *) log_error "Unknown parameter: $1"; show_help ;;
+        *) log_error "Unknown parameter: $1"; echo "Run '$0 --help' for usage." >&2; exit 1 ;;
       esac
     done
   else
@@ -652,30 +631,37 @@ echo ""
 log_step "Phase 1 — Base System & Time Synchronization"
 log_info "Objective: Update package repositories, install essential utilities (sudo, curl), and synchronize clock via NTP."
 
-PHASE1_ALREADY_CONFIGURED=false
+if [ "$SKIP_UPGRADE" = true ]; then
+  log_step "1.1 Updating package lists (package upgrade skipped via --skip-upgrade)..."
+  apt-get update -qq
+else
+  log_step "1.1 Updating package lists and upgrading installed packages..."
+  apt-get update -qq
+  apt-get upgrade -y -qq
+  log_success "Installed packages upgraded."
+fi
+
+if command -v sudo >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+  log_success "1.2 Baseline tools (sudo, curl) are already installed. Skipping..."
+else
+  log_step "1.2 Installing baseline packages (sudo, curl)..."
+  apt-get install -y -qq sudo curl
+fi
+
 CURRENT_TZ="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
 NTP_SYNC="$(timedatectl status 2>/dev/null | grep -E 'NTP service: active|Network time on: yes|System clock synchronized: yes' || true)"
 
-if command -v sudo >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && [ -n "$NTP_SYNC" ] && ([ "$CURRENT_TZ" = "$TIMEZONE" ] || [ -z "$TIMEZONE" ]); then
-  PHASE1_ALREADY_CONFIGURED=true
-fi
-
-if [ "$PHASE1_ALREADY_CONFIGURED" = true ]; then
-  log_success "Phase 1: Base system, essential tools (sudo, curl), timezone ($TIMEZONE), and NTP are already configured at standard. Skipping..."
+if [ -n "$NTP_SYNC" ] && { [ "$CURRENT_TZ" = "$TIMEZONE" ] || [ -z "$TIMEZONE" ]; }; then
+  log_success "1.3 Timezone ($TIMEZONE) and NTP synchronization are already configured at standard. Skipping..."
 else
-  log_step "1.1 Updating package repositories and installing baseline packages (sudo, curl)..."
-  apt-get update -qq
-  apt-get install -y -qq sudo curl
-  apt-get upgrade -y -qq
-
-  log_step "1.2 Configuring Timezone ($TIMEZONE) and NTP synchronization..."
+  log_step "1.3 Configuring Timezone ($TIMEZONE) and NTP synchronization..."
   if timedatectl list-timezones | grep -qx "$TIMEZONE"; then
     timedatectl set-timezone "$TIMEZONE"
   else
     log_warn "Timezone '$TIMEZONE' not found on system. Keeping current timezone."
   fi
   timedatectl set-ntp true 2>/dev/null || true
-  log_success "Base system updated and system clock synchronized."
+  log_success "System clock synchronized."
 fi
 
 # ==================================================================
@@ -734,7 +720,7 @@ else
   if [[ "$PASSWD_STATUS" =~ ^(L|NP)$ ]]; then
     echo ""
     log_warn "ATTENTION: Set the password for '${NOVO_USUARIO}' (required for sudo):"
-    if [ -c /dev/tty ]; then
+    if { : < /dev/tty; } 2>/dev/null; then
       passwd "$NOVO_USUARIO" < /dev/tty
     else
       passwd "$NOVO_USUARIO"
@@ -1253,6 +1239,11 @@ fi
 
 if [ "$PHASE10_ALREADY_CONFIGURED" = true ]; then
   log_success "Phase 10: System audit daemon (auditd) is already installed and active at standard. Skipping..."
+  if [ "$RUN_AUDIT" = true ] && [ -f /var/log/lynis-hardening-report.txt ]; then
+    LYNIS_SCORE="$(grep -E 'Hardening index' /var/log/lynis-hardening-report.txt | awk -F: '{print $2}' | tr -d ' ' || true)"
+    LYNIS_SCORE="${LYNIS_SCORE:-N/A}"
+    log_info "Previous Lynis report found: Hardening Index ${C_BOLD}${LYNIS_SCORE}${C_RESET} (/var/log/lynis-hardening-report.txt)"
+  fi
 else
   log_step "10.1 Installing and configuring auditd system audit daemon..."
   apt-get install -y -qq auditd
@@ -1260,13 +1251,13 @@ else
   systemctl start auditd 2>/dev/null || true
   log_success "auditd service installed and active."
 
-  LYNIS_SCORE="N/A"
   if [ "$RUN_AUDIT" = true ]; then
     log_step "10.2 Installing Lynis and running security audit baseline..."
     apt-get install -y -qq lynis
     log_info "Executing Lynis security audit (this may take 1-2 minutes)..."
     lynis audit system --quick --no-colors > /var/log/lynis-hardening-report.txt 2>&1 || true
-    LYNIS_SCORE=$(grep -E 'Hardening index' /var/log/lynis-hardening-report.txt | awk -F: '{print $2}' | tr -d ' ' || echo "Checked")
+    LYNIS_SCORE="$(grep -E 'Hardening index' /var/log/lynis-hardening-report.txt | awk -F: '{print $2}' | tr -d ' ' || true)"
+    LYNIS_SCORE="${LYNIS_SCORE:-N/A}"
     log_success "Lynis audit complete! Hardening Index: ${C_BOLD}${LYNIS_SCORE}${C_RESET} (Report: /var/log/lynis-hardening-report.txt)"
   fi
 fi

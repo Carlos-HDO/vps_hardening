@@ -20,8 +20,8 @@ else
   TARGET_BACKUP="${1:-}"
 
   if [ -z "$TARGET_BACKUP" ]; then
-    if [ -f "$backup_dir/latest.tar.gz" ]; then
-      TARGET_BACKUP="$backup_dir/latest.tar.gz"
+    if [ -f "$BACKUP_DIR/latest.tar.gz" ]; then
+      TARGET_BACKUP="$BACKUP_DIR/latest.tar.gz"
     elif compgen -G "$BACKUP_DIR/hardening_backup_*.tar.gz" > /dev/null; then
       TARGET_BACKUP=$(ls -t "$BACKUP_DIR"/hardening_backup_*.tar.gz 2>/dev/null | head -n 1)
     fi
