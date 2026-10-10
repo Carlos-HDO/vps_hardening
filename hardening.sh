@@ -616,6 +616,25 @@ if [ "$SAFETY_TIMER" = auto ]; then
   fi
 fi
 
+# 7. Settings from a previous run (re-run with a different port or admin user)
+PREVIOUS_SSH_PORT=""
+PREVIOUS_ALLOW_USERS=""
+if [ -r /etc/ssh/sshd_config.d/00-hardening.conf ]; then
+  PREVIOUS_SSH_PORT="$(awk '$1 == "Port" { print $2; exit }' /etc/ssh/sshd_config.d/00-hardening.conf)"
+  PREVIOUS_ALLOW_USERS="$(awk '$1 == "AllowUsers" { $1 = ""; print; exit }' /etc/ssh/sshd_config.d/00-hardening.conf)"
+fi
+[ "$PREVIOUS_SSH_PORT" = "$SSH_PORT" ] && PREVIOUS_SSH_PORT=""
+
+# Previous admins keep SSH access (silently dropping them could lock someone out)
+SSH_ALLOW_USERS="$NOVO_USUARIO"
+KEPT_ALLOW_USERS=""
+for prev_user in $PREVIOUS_ALLOW_USERS; do
+  if [ "$prev_user" != "$NOVO_USUARIO" ] && id "$prev_user" &>/dev/null; then
+    SSH_ALLOW_USERS="$SSH_ALLOW_USERS $prev_user"
+    KEPT_ALLOW_USERS="${KEPT_ALLOW_USERS:+$KEPT_ALLOW_USERS }$prev_user"
+  fi
+done
+
 # ------------------------------------------------------------------
 # Plan Confirmation
 # ------------------------------------------------------------------
@@ -624,6 +643,10 @@ echo -e "${C_BOLD}--- Hardening Parameters (vps_hardening v${VERSION}) ---${C_RE
 echo -e "  New User:          ${C_GREEN}${NOVO_USUARIO}${C_RESET}"
 echo -e "  SSH Public Key:    ${C_GREEN}${CHAVE_SSH:0:40}...${C_RESET}"
 echo -e "  New SSH Port:      ${C_GREEN}${SSH_PORT}${C_RESET}"
+if [ -n "$PREVIOUS_SSH_PORT" ]; then
+  echo -e "  Previous SSH Port: ${C_YELLOW}${PREVIOUS_SSH_PORT} (its UFW rule will be removed)${C_RESET}"
+fi
+echo -e "  SSH AllowUsers:    ${C_GREEN}${SSH_ALLOW_USERS}${C_RESET}"
 echo -e "  Allowed Ports:     ${C_GREEN}${ALLOW_PORTS:-None (SSH only)}${C_RESET}"
 echo -e "  Timezone:          ${C_GREEN}${TIMEZONE}${C_RESET}"
 if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
@@ -644,6 +667,9 @@ if [ "$DRY_RUN" = true ]; then
 fi
 echo -e "${C_BOLD}----------------------------${C_RESET}"
 echo ""
+if [ -n "$KEPT_ALLOW_USERS" ]; then
+  log_warn "Admin user(s) from a previous run keep SSH access: ${C_BOLD}${KEPT_ALLOW_USERS}${C_RESET}. Remove them from AllowUsers in /etc/ssh/sshd_config.d/00-hardening.conf if no longer needed."
+fi
 log_warn "Make sure port ${C_BOLD}${SSH_PORT}/tcp${C_RESET} is also allowed in your provider's firewall (Hetzner Cloud Firewall, AWS Security Group, DigitalOcean Cloud Firewall, etc.)."
 
 echo ""
@@ -713,7 +739,7 @@ run_dry_run_simulation() {
   echo -e "            - PubkeyAuthentication yes"
   echo -e "            - X11Forwarding no"
   echo -e "            - MaxAuthTries 3 / LoginGraceTime 20"
-  echo -e "            - AllowUsers ${NOVO_USUARIO}"
+  echo -e "            - AllowUsers ${SSH_ALLOW_USERS}"
   echo -e "            - ClientAliveInterval 300 / ClientAliveCountMax 2"
   echo -e "  [DRY-RUN] Would validate syntax with 'sshd -t' (aborts on error)"
   echo -e "  [DRY-RUN] If UFW is already active, would open ${SSH_PORT}/tcp before restarting SSH"
@@ -735,6 +761,9 @@ run_dry_run_simulation() {
     done
   fi
   echo -e "  [DRY-RUN] Would enable firewall: ufw --force enable"
+  if [ -n "$PREVIOUS_SSH_PORT" ]; then
+    echo -e "  [DRY-RUN] Would remove the 'SSH Hardened Port' rule for the previous SSH port ${PREVIOUS_SSH_PORT}/tcp"
+  fi
   echo ""
 
   echo -e "${C_BOLD}Phase 5: Intrusion Prevention & Brute-Force Defense (Fail2ban)${C_RESET}"
@@ -976,7 +1005,7 @@ if [ -f /etc/ssh/sshd_config.d/00-hardening.conf ] && [ -f "$USER_HOME/.ssh/auth
   if grep -qE "^\s*Port\s+$SSH_PORT\b" /etc/ssh/sshd_config.d/00-hardening.conf && \
      grep -qE "^\s*PermitRootLogin\s+no\b" /etc/ssh/sshd_config.d/00-hardening.conf && \
      grep -qE "^\s*PasswordAuthentication\s+no\b" /etc/ssh/sshd_config.d/00-hardening.conf && \
-     grep -qE "^\s*AllowUsers\s+.*$NOVO_USUARIO" /etc/ssh/sshd_config.d/00-hardening.conf; then
+     [ "$(awk '$1 == "AllowUsers" { $1 = ""; sub(/^ +/, ""); print; exit }' /etc/ssh/sshd_config.d/00-hardening.conf)" = "$SSH_ALLOW_USERS" ]; then
     if ss -tlnp 2>/dev/null | grep -E "ssh" | grep -qE ":$SSH_PORT\b"; then
       ALL_KEYS_PRESENT=true
       while IFS= read -r key_line || [ -n "$key_line" ]; do
@@ -1051,7 +1080,7 @@ PubkeyAuthentication yes
 X11Forwarding no
 MaxAuthTries 3
 LoginGraceTime 20
-AllowUsers $NOVO_USUARIO
+AllowUsers $SSH_ALLOW_USERS
 ClientAliveInterval 300
 ClientAliveCountMax 2
 EOF
@@ -1148,6 +1177,14 @@ else
 
   ufw --force enable >/dev/null
   log_success "UFW active with restrictive default-deny policy and rate-limiting on port $SSH_PORT."
+fi
+
+# Re-run with a new port: close the previous port, but only the rule this script created.
+# The current session survives (UFW keeps accepting ESTABLISHED connections).
+if [ -n "$PREVIOUS_SSH_PORT" ] && command -v ufw >/dev/null 2>&1 && \
+   ufw status 2>/dev/null | grep -qE "^${PREVIOUS_SSH_PORT}/tcp .*# SSH Hardened Port"; then
+  ufw --force delete limit "${PREVIOUS_SSH_PORT}/tcp" >/dev/null
+  log_info "Removed UFW rule for the previous SSH port ${PREVIOUS_SSH_PORT}/tcp."
 fi
 
 # ==================================================================

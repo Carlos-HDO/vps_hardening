@@ -121,6 +121,18 @@ jobs:
           grep -q "Original pre-hardening snapshot already exists" "$RUNNER_TEMP/run2.log"
           test "$(sudo find /var/backups/vps_hardening -name 'hardening_backup_*.tar.gz' | wc -l)" -eq 1
 
+      - name: Re-run with a new port and a new admin user
+        run: |
+          sudo ./hardening.sh -y -u ciuser2 -k "$(cat "$RUNNER_TEMP/ci_key.pub")" -p 52222 \
+            --password-hash "$PASSWORD_HASH" --skip-upgrade --no-verify
+          sudo ufw status | grep -qE '^52222/tcp .*LIMIT'
+          if sudo ufw status | grep -qE "^${CI_PORT}/tcp"; then
+            echo "UFW rule for the previous SSH port ${CI_PORT} is still open"; exit 1
+          fi
+          sudo grep -qx "AllowUsers ciuser2 ${CI_USER}" /etc/ssh/sshd_config.d/00-hardening.conf
+          ssh $SSH_OPTS -p 52222 "ciuser2@127.0.0.1" true
+          ssh $SSH_OPTS -p 52222 "$CI_USER@127.0.0.1" true
+
       - name: Rollback
         run: sudo ./rollback.sh --yes
 
@@ -128,8 +140,8 @@ jobs:
         run: |
           test ! -e /etc/ssh/sshd_config.d/00-hardening.conf
           test ! -e /etc/sysctl.d/99-hardening.conf
-          if sudo ss -tlnp | grep -q ":${CI_PORT} "; then
-            echo "sshd is still listening on ${CI_PORT}"; exit 1
+          if sudo ss -tlnp | grep -qE ":(${CI_PORT}|52222) "; then
+            echo "sshd is still listening on a hardened port"; exit 1
           fi
           diff <(sudo ufw status | head -n 1) "$RUNNER_TEMP/ufw_before"
           diff <(sysctl -n net.ipv4.tcp_congestion_control) "$RUNNER_TEMP/cc_before"

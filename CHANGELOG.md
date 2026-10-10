@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Re-running with a different `-p` left the previous SSH port open in UFW. The `SSH Hardened Port` rule of the previous port is now removed (only the rule the script created; the current session is kept).
+- Re-running with a different `-u` replaced `AllowUsers`, silently removing SSH access for the previous admin. Previous admins that still exist are kept, with a warning; the plan summary and dry-run show the resulting `AllowUsers` and the port being closed.
+- The Phase 3 idempotency check matched `AllowUsers` by substring (`op` matched `operator`); it now compares the exact list.
+
 ## [1.0.0] - 2026-10-10
 
 First versioned release. Fixes and improvements from the review in `plan/PLAN.md`.
