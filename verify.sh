@@ -16,7 +16,7 @@
 
 set -uo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 # Terminal colors and formatting
 C_RESET="\033[0m"

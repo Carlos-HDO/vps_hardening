@@ -4,17 +4,17 @@
 # Downloads a tagged release, verifies it against the release SHA256SUMS and
 # runs hardening.sh. All arguments are passed through to hardening.sh.
 #
-#   curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.0/quick-install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.1/quick-install.sh | sudo bash
 #   curl -fsSL .../quick-install.sh | sudo bash -s -- -u operator -k "gh:username" --password-hash '<hash>' -y
 #
 # Environment:
-#   VPS_HARDENING_REF            Release tag to install (default: v1.0.0)
+#   VPS_HARDENING_REF            Release tag to install (default: v1.0.1)
 #   VPS_HARDENING_SKIP_CHECKSUM  Set to 1 to skip SHA256 verification (e.g. for an untagged branch)
 #
 set -euo pipefail
 
 REPO="carlos-hdo/vps_hardening"
-REF="${VPS_HARDENING_REF:-v1.0.0}"
+REF="${VPS_HARDENING_REF:-v1.0.1}"
 FILES=(hardening.sh verify.sh rollback.sh)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" &>/dev/null && pwd)" || SCRIPT_DIR=""

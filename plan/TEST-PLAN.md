@@ -1,7 +1,7 @@
 # Plano de Testes — vps_hardening v1.0.0
 
 > Criado em 2026-10-10, após a release `v1.0.0`.
-> Status: **pendente**. Marque cada caso com `[x]` e anote data, provedor e imagem usados.
+> Versão alvo: **v1.0.1** (inclui as correções da Fase T5). Status: **pendente**. Marque cada caso com `[x]` e anote data, provedor e imagem usados.
 
 ## O que já está coberto
 
@@ -39,7 +39,7 @@
 
 | # | Caso | Passos | Resultado esperado |
 | :--- | :--- | :--- | :--- |
-| [ ] T1.1 | Ubuntu 24.04, wizard interativo | `curl -fsSL .../v1.0.0/quick-install.sh \| sudo bash` e responder o wizard | Checksums verificados, 11 fases OK, `verify-hardening` sem FAIL, timer armado |
+| [ ] T1.1 | Ubuntu 24.04, wizard interativo | `curl -fsSL .../v1.0.1/quick-install.sh \| sudo bash` e responder o wizard | Checksums verificados, 11 fases OK, `verify-hardening` sem FAIL, timer armado |
 | [ ] T1.2 | Confirmar o timer | Testar `ssh -i ~/.ssh/vpsh_test -p 52211 operator@IP` em outro terminal e digitar `CONFIRM` | `systemctl list-timers` sem `vps-hardening-autorevert` |
 | [ ] T1.3 | Debian 12, flags + `-y` | `sudo ./hardening.sh -u operator -k gh:<user> --password-hash '<hash>' -a 80,443 -y` | Sem prompts; `sudo whoami` funciona com a senha do hash |
 | [ ] T1.4 | Debian 13 | Mesmo que T1.3 | Igual a T1.3 (é a primeira execução real no Debian 13) |
@@ -81,7 +81,7 @@ Pela leitura do código, há **comportamentos a confirmar**:
 
 | # | Caso | Passos | Resultado esperado / a investigar |
 | :--- | :--- | :--- | :--- |
-| [ ] T5.1 | Trocar a porta | Rodar de novo com `-p 52222` | sshd e fail2ban passam para `52222`; a regra UFW `SSH Hardened Port` de `52211` (v4 e v6) é removida. ✅ Bug confirmado e corrigido (CHANGELOG *Unreleased*), coberto no E2E; falta validar na VPS |
+| [ ] T5.1 | Trocar a porta | Rodar de novo com `-p 52222` | sshd e fail2ban passam para `52222`; a regra UFW `SSH Hardened Port` de `52211` (v4 e v6) é removida. ✅ Bug confirmado e corrigido na v1.0.1, coberto no E2E; falta validar na VPS |
 | [ ] T5.2 | Trocar o usuário | Rodar de novo com `-u outro` | `AllowUsers outro <admin anterior>`, com aviso no resumo; os dois logam. ✅ Bug confirmado e corrigido, coberto no E2E; falta validar na VPS |
 | [ ] T5.3 | Adicionar portas | Rodar de novo com `-a 8080` | `8080` aberta, as demais mantidas |
 | [ ] T5.4 | Rollback após T5.1/T5.2 | `sudo hardening-rollback` | Volta ao estado **anterior à primeira execução** (snapshot original) |

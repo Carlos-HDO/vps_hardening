@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.1] - 2026-10-10
 
 ### Fixed
 - Re-running with a different `-p` left the previous SSH port open in UFW. The `SSH Hardened Port` rule of the previous port is now removed (only the rule the script created; the current session is kept).
@@ -44,4 +44,5 @@ First versioned release. Fixes and improvements from the review in `plan/PLAN.md
 - `sshd -t` failed on Ubuntu 24.04 before `ssh.service` had been socket-activated (missing `/run/sshd`).
 - Unknown command-line flags exited with status 0.
 
+[1.0.1]: https://github.com/carlos-hdo/vps_hardening/releases/tag/v1.0.1
 [1.0.0]: https://github.com/carlos-hdo/vps_hardening/releases/tag/v1.0.0

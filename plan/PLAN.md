@@ -232,4 +232,4 @@ Gravar `hardening_backup_<ts>.state` (formato `chave=valor`) com:
 - [x] Todos os itens marcados.
 - [x] CI verde: lint, drift, matriz de dry-run (Ubuntu 20.04/22.04/24.04, Debian 12/13) e E2E em 22.04/24.04. *(PR #1)*
 - [ ] Teste manual numa VPS real (Debian 12 e Ubuntu 24.04): hardening → login na porta nova → rollback → login na porta 22. *(validado localmente em containers systemd; sysctl, `/dev/shm` e auditd não puderam ser exercitados em container)*
-- [ ] Criar e publicar a tag `v1.0.0` depois do merge na `main` (`git tag v1.0.0 && git push origin v1.0.0`). Até lá, as URLs fixadas em `v1.0.0` (quick-install, downloads de helpers no modo `curl | bash`) retornam 404.
+- [x] Criar e publicar a tag `v1.0.0` depois do merge na `main`. *(release publicada; seguida da `v1.0.1` com as correções da Fase T5 do TEST-PLAN)*
