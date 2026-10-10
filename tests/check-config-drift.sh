@@ -27,7 +27,7 @@ extract_heredocs() {
 # Templates use example values and extra comments; compare settings only
 normalize() {
   # shellcheck disable=SC2016  # the literal variable names in hardening.sh are what we replace
-  sed -e 's/\$SSH_PORT/52211/g' -e 's/\$NOVO_USUARIO/operator/g' "$1" | grep -vE '^[[:space:]]*(#|$)' || true
+  sed -e 's/\$SSH_PORT/52211/g' -e 's/\$NOVO_USUARIO/operator/g' -e 's/\$SSH_ALLOW_USERS/operator/g' "$1" | grep -vE '^[[:space:]]*(#|$)' || true
 }
 
 # check <target path written by hardening.sh> <template in configs/> <exact|settings>

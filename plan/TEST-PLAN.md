@@ -81,8 +81,8 @@ Pela leitura do código, há **comportamentos a confirmar**:
 
 | # | Caso | Passos | Resultado esperado / a investigar |
 | :--- | :--- | :--- | :--- |
-| [ ] T5.1 | Trocar a porta | Rodar de novo com `-p 52222` | sshd e fail2ban passam para `52222`. ⚠️ **Suspeita:** a regra UFW de `52211` continua aberta (a Fase 4 só adiciona regras). Se confirmar, remover a regra antiga |
-| [ ] T5.2 | Trocar o usuário | Rodar de novo com `-u outro` | ⚠️ **Suspeita:** `AllowUsers` passa a ter só `outro`, e o admin anterior perde o SSH sem aviso. Decidir entre manter os dois ou avisar |
+| [ ] T5.1 | Trocar a porta | Rodar de novo com `-p 52222` | sshd e fail2ban passam para `52222`; a regra UFW `SSH Hardened Port` de `52211` (v4 e v6) é removida. ✅ Bug confirmado e corrigido (CHANGELOG *Unreleased*), coberto no E2E; falta validar na VPS |
+| [ ] T5.2 | Trocar o usuário | Rodar de novo com `-u outro` | `AllowUsers outro <admin anterior>`, com aviso no resumo; os dois logam. ✅ Bug confirmado e corrigido, coberto no E2E; falta validar na VPS |
 | [ ] T5.3 | Adicionar portas | Rodar de novo com `-a 8080` | `8080` aberta, as demais mantidas |
 | [ ] T5.4 | Rollback após T5.1/T5.2 | `sudo hardening-rollback` | Volta ao estado **anterior à primeira execução** (snapshot original) |
 
@@ -129,7 +129,7 @@ Pela leitura do código, há **comportamentos a confirmar**:
 
 - **Reboot e Debian no CI:** os runners do GitHub são só Ubuntu e não reiniciam no meio do job. Uma opção é usar VMs LXD/QEMU dentro do runner (`lxc launch images:debian/12 --vm`) para cobrir T2 e Debian 12/13 de verdade.
 - **Execução agendada** (ex.: semanal) do job E2E, para detectar mudanças de pacotes nas imagens (como aconteceu com o Debian 11).
-- **T5.1/T5.2:** se as suspeitas se confirmarem, corrigir e adicionar o caso ao E2E.
+- ~~**T5.1/T5.2:** corrigir e adicionar o caso ao E2E~~ — feito (re-execução com nova porta e novo usuário no job `e2e`).
 
 ## Registro de execuções
 
