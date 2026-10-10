@@ -1,7 +1,7 @@
 # VPS Security Hardening Guide — Ubuntu / Debian
 
 > Production initial security baseline guide for newly provisioned, internet-facing VPS servers.  
-> Verified on **Ubuntu 24.04 LTS (Noble)** — compatible with Ubuntu 20.04/22.04 LTS and Debian 11/12+.
+> Verified on **Ubuntu 24.04 LTS (Noble)** — compatible with Ubuntu 20.04/22.04 LTS and Debian 12/13.
 
 ---
 

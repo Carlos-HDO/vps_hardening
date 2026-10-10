@@ -146,7 +146,9 @@ if [ "$LEGACY_SNAPSHOT" = false ]; then
   while IFS= read -r path || [ -n "$path" ]; do
     [ -n "$path" ] || continue
     if [ -d "$path" ] && [ ! -L "$path" ]; then
-      rmdir "$path" 2>/dev/null && log_info "  removed directory $path" || true
+      if rmdir "$path" 2>/dev/null; then
+        log_info "  removed directory $path"
+      fi
     elif [ -e "$path" ] || [ -L "$path" ]; then
       rm -f "$path" && log_info "  removed $path"
     fi
@@ -162,7 +164,9 @@ if [ "$LEGACY_SNAPSHOT" = false ]; then
     u="${key#account.}"
     id "$u" &>/dev/null || continue
     IFS='|' read -r acc_shell acc_pw acc_keys <<< "$value"
-    [ -n "$acc_shell" ] && usermod -s "$acc_shell" "$u" 2>/dev/null || true
+    if [ -n "$acc_shell" ]; then
+      usermod -s "$acc_shell" "$u" 2>/dev/null || true
+    fi
     if [ "$acc_pw" != "L" ]; then
       usermod -U "$u" >/dev/null 2>&1 || true
     fi

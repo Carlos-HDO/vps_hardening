@@ -1,6 +1,6 @@
 # VPS Hardening Automation (`vps_hardening`)
 
-Comprehensive, modular **VPS Security Hardening** automation tool designed for newly provisioned servers running **Ubuntu (20.04/22.04/24.04 LTS)** and **Debian (11/12+)**.
+Comprehensive, modular **VPS Security Hardening** automation tool designed for newly provisioned servers running **Ubuntu (20.04/22.04/24.04 LTS)** and **Debian (12/13)**.
 
 Applies battle-tested production security standards to transform a stock, internet-facing VPS into a resilient system protected against automated botnets, brute-force attacks, IP spoofing, and kernel-level memory exploitation.
 

@@ -17,7 +17,7 @@ REPO="carlos-hdo/vps_hardening"
 REF="${VPS_HARDENING_REF:-v1.0.0}"
 FILES=(hardening.sh verify.sh rollback.sh)
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" &>/dev/null && pwd || true)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" &>/dev/null && pwd)" || SCRIPT_DIR=""
 
 # Running from a clone: use the local files
 if [ -f "$SCRIPT_DIR/hardening.sh" ]; then

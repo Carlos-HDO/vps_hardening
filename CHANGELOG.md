@@ -26,6 +26,9 @@ First versioned release. Fixes and improvements from the review in `plan/PLAN.md
 - Remote helper downloads are pinned to the release tag instead of `main`.
 - README fully in English; GUIDE.md updated.
 
+### Removed
+- Debian 11 support: it reached end of LTS on 2026-08-31 and its security packages are gone from the mirrors. CI now tests Debian 12 and 13.
+
 ### Fixed
 - `rollback.sh` crashed on its fallback path (`$backup_dir` typo).
 - Re-running with `--audit` crashed on an unbound `LYNIS_SCORE`.

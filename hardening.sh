@@ -2,7 +2,7 @@
 #
 # ==============================================================================
 # VPS Hardening Automation Tool
-# Compatible with Ubuntu 20.04/22.04/24.04 LTS and Debian 11/12+
+# Compatible with Ubuntu 20.04/22.04/24.04 LTS and Debian 12/13
 #
 # Usage Modes:
 #   1) Interactive (direct execution or via curl/wget | bash):
@@ -40,7 +40,7 @@ log_success() { echo -e "${C_GREEN}[✔]${C_RESET} $*"; }
 log_warn()    { echo -e "${C_YELLOW}[!]${C_RESET} $*"; }
 log_error()   { echo -e "${C_RED}[-] ERROR:${C_RESET} $*" >&2; }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" &>/dev/null && pwd || true)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" &>/dev/null && pwd)" || SCRIPT_DIR=""
 # Helper scripts are fetched from the release matching this script (used only when not running from a clone)
 REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v${VERSION}}"
 
