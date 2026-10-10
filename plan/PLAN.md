@@ -82,14 +82,14 @@ Cada etapa vira um commit próprio, para facilitar a revisão e um eventual reve
 
 **Problema:** `tar -x` restaura os arquivos antigos, mas não remove os criados depois. O SSH continua na porta nova, os sysctl/modprobe/limits seguem ativos, o UFW continua ligado e o `ssh.socket`, desabilitado.
 
-### [ ] 3.1 Ampliar o snapshot
+### [x] 3.1 Ampliar o snapshot
 Adicionar ao `create_rollback_snapshot` (`hardening.sh:252-262`):
 - `/etc/systemd/coredump.conf.d`
 - `/etc/modules-load.d`
 - `/usr/local/bin/ssh-login-alert.sh`
 - `/etc/vps-hardening`
 
-### [ ] 3.2 Manifesto de arquivos criados
+### [x] 3.2 Manifesto de arquivos criados
 - Ao lado de cada `hardening_backup_<ts>.tar.gz`, gravar `hardening_backup_<ts>.created`: a lista de arquivos que o script vai criar e que **ainda não existiam** antes do hardening:
   - `/etc/ssh/sshd_config.d/00-hardening.conf`
   - `/etc/fail2ban/jail.local`
@@ -104,14 +104,14 @@ Adicionar ao `create_rollback_snapshot` (`hardening.sh:252-262`):
   - os arquivos `*.bak` gerados em `/etc/ssh` e `/etc/pam.d`
 - Manter essa lista numa única constante (array `HARDENING_MANAGED_FILES`) usada tanto pelo snapshot quanto pelo dry-run.
 
-### [ ] 3.3 Estado de serviços e kernel
+### [x] 3.3 Estado de serviços e kernel
 Gravar `hardening_backup_<ts>.state` (formato `chave=valor`) com:
 - `ufw_active=yes|no`
 - `ssh_socket_enabled=yes|no`
 - `unattended_upgrades_enabled=yes|no`
 - os valores atuais de cada chave sysctl que o script altera (lidos com `sysctl -n`)
 
-### [ ] 3.4 Uma única implementação de rollback
+### [x] 3.4 Uma única implementação de rollback
 - `rollback.sh` vira a fonte da verdade, com toda a lógica.
 - `hardening.sh` instala uma cópia em `/usr/local/sbin/hardening-rollback`, no mesmo esquema do `verify-hardening` (`hardening.sh:1390-1399`), e `--rollback` faz `exec` dela.
 - Fluxo do rollback:

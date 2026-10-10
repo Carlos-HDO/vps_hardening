@@ -38,6 +38,9 @@ log_success() { echo -e "${C_GREEN}[✔]${C_RESET} $*"; }
 log_warn()    { echo -e "${C_YELLOW}[!]${C_RESET} $*"; }
 log_error()   { echo -e "${C_RED}[-] ERROR:${C_RESET} $*" >&2; }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" &>/dev/null && pwd || true)"
+REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main}"
+
 # Helper function for safe terminal input (even when piped from `curl ... | bash`)
 read_input() {
   local prompt="$1"
@@ -161,93 +164,201 @@ detect_virtualization() {
 detect_virtualization
 
 # ------------------------------------------------------------------
-# Rollback Implementation
+# Rollback Snapshot (created only on the first run)
 # ------------------------------------------------------------------
-do_rollback() {
-  local target_backup="${1:-}"
-  local backup_dir="/var/backups/vps_hardening"
+BACKUP_DIR="/var/backups/vps_hardening"
 
-  echo ""
-  echo -e "${C_BOLD}==========================================================${C_RESET}"
-  echo -e "${C_CYAN}${C_BOLD}          VPS HARDENING SYSTEM ROLLBACK${C_RESET}"
-  echo -e "${C_BOLD}==========================================================${C_RESET}"
-  echo ""
+# Paths archived in the snapshot (restored by rollback.sh)
+SNAPSHOT_PATHS=(
+  /etc/ssh
+  /etc/pam.d/sshd
+  /etc/sysctl.d
+  /etc/fstab
+  /etc/default/ufw
+  /etc/ufw
+  /etc/fail2ban
+  /etc/security/limits.d
+  /etc/modprobe.d
+  /etc/modules-load.d
+  /etc/apt/apt.conf.d/20auto-upgrades
+  /etc/systemd/coredump.conf.d
+  /usr/local/bin/ssh-login-alert.sh
+  /etc/vps-hardening
+)
 
-  if [ -z "$target_backup" ]; then
-    if [ -f "$backup_dir/latest.tar.gz" ]; then
-      target_backup="$backup_dir/latest.tar.gz"
-    elif compgen -G "$backup_dir/hardening_backup_*.tar.gz" > /dev/null; then
-      target_backup=$(ls -t "$backup_dir"/hardening_backup_*.tar.gz 2>/dev/null | head -n 1)
-    fi
-  fi
+# Files this script may create. Those absent before the first run are listed in
+# the .created manifest and deleted by rollback.sh.
+HARDENING_MANAGED_FILES=(
+  /etc/ssh/sshd_config.bak
+  /etc/ssh/sshd_config.d/00-hardening.conf
+  /etc/pam.d/sshd.bak
+  /etc/fail2ban/jail.local
+  /etc/sysctl.d/99-hardening.conf
+  /etc/modules-load.d/bbr.conf
+  /etc/apt/apt.conf.d/20auto-upgrades
+  /etc/security/limits.d/10-hardening-coredump.conf
+  /etc/systemd/coredump.conf.d/disable.conf
+  /etc/modprobe.d/hardening.conf
+  /usr/local/bin/ssh-login-alert.sh
+  /etc/vps-hardening/alert.conf
+)
 
-  if [ -z "$target_backup" ] || [ ! -f "$target_backup" ]; then
-    log_error "No rollback backup archive found in '$backup_dir'!"
-    echo "Usage: sudo $0 --rollback [/path/to/hardening_backup.tar.gz]"
-    exit 1
-  fi
+# Directories this script may create (removed by rollback.sh only if empty)
+HARDENING_MANAGED_DIRS=(
+  /etc/vps-hardening
+  /etc/systemd/coredump.conf.d
+  /etc/ssh/sshd_config.d
+)
 
-  log_warn "Target snapshot: ${C_BOLD}${target_backup}${C_RESET}"
-  if [ "$ASSUME_YES" = false ]; then
-    read -r -p "Are you sure you want to restore previous system configurations? [y/N]: " confirm_rb || true
-    if [[ ! "$confirm_rb" =~ ^[YySs]$ ]]; then
-      log_info "Rollback aborted by user."
-      exit 0
-    fi
-  fi
+# Kernel parameters changed in Phase 6 (original values saved in the .state file)
+HARDENING_SYSCTL_KEYS=(
+  net.ipv4.conf.all.accept_source_route
+  net.ipv4.conf.default.accept_source_route
+  net.ipv6.conf.all.accept_source_route
+  net.ipv4.conf.all.accept_redirects
+  net.ipv4.conf.default.accept_redirects
+  net.ipv6.conf.all.accept_redirects
+  net.ipv4.conf.all.send_redirects
+  net.ipv4.conf.all.rp_filter
+  net.ipv4.conf.default.rp_filter
+  net.ipv4.conf.all.log_martians
+  net.ipv4.tcp_syncookies
+  net.ipv4.icmp_echo_ignore_broadcasts
+  net.ipv4.icmp_ignore_bogus_error_responses
+  kernel.randomize_va_space
+  kernel.kptr_restrict
+  kernel.dmesg_restrict
+  fs.suid_dumpable
+  net.core.default_qdisc
+  net.ipv4.tcp_congestion_control
+)
 
-  log_info "Restoring files from snapshot..."
-  tar -xzf "$target_backup" -C /
+DEFAULT_CLOUD_ACCOUNTS=(ubuntu debian admin centos)
 
-  log_info "Reloading restored kernel parameters..."
-  sysctl --system >/dev/null 2>&1 || true
+write_snapshot_state() {
+  local unit enabled active key value u u_shell u_pw u_home u_keys
 
-  log_info "Validating OpenSSH configuration..."
-  if sshd -t 2>/dev/null; then
-    systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service 2>/dev/null || true
-    log_success "SSH service restarted with restored configuration."
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    echo "ufw.active=yes"
   else
-    log_warn "Warning: sshd configuration check reported errors. Check /etc/ssh/."
+    echo "ufw.active=no"
   fi
 
-  log_info "Restarting Fail2ban..."
-  systemctl restart fail2ban 2>/dev/null || true
+  for unit in ssh.service ssh.socket fail2ban auditd unattended-upgrades; do
+    enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    active="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    echo "service.${unit}.enabled=${enabled:-not-found}"
+    echo "service.${unit}.active=${active:-inactive}"
+  done
 
-  echo ""
-  log_success "Rollback successfully completed! System configurations restored from: $target_backup"
-  exit 0
-}
-
-create_rollback_snapshot() {
-  local backup_dir="/var/backups/vps_hardening"
-  local timestamp="$(date +%Y%m%d_%H%M%S)"
-  local snapshot_archive="${backup_dir}/hardening_backup_${timestamp}.tar.gz"
-
-  mkdir -p "$backup_dir"
-  log_info "Creating pre-hardening rollback snapshot..."
-
-  local files_to_backup=()
-  for item in \
-    /etc/ssh \
-    /etc/pam.d/sshd \
-    /etc/sysctl.d \
-    /etc/fstab \
-    /etc/default/ufw \
-    /etc/ufw \
-    /etc/fail2ban \
-    /etc/security/limits.d \
-    /etc/modprobe.d \
-    /etc/apt/apt.conf.d/20auto-upgrades; do
-    if [ -e "$item" ]; then
-      files_to_backup+=("${item#/}")
+  for key in "${HARDENING_SYSCTL_KEYS[@]}"; do
+    if value="$(sysctl -n "$key" 2>/dev/null)"; then
+      echo "sysctl.${key}=${value}"
     fi
   done
 
-  if [ ${#files_to_backup[@]} -gt 0 ]; then
-    tar -czf "$snapshot_archive" -C / "${files_to_backup[@]}" 2>/dev/null || true
-    ln -sf "$snapshot_archive" "$backup_dir/latest.tar.gz" 2>/dev/null || true
-    ROLLBACK_SNAPSHOT_PATH="$snapshot_archive"
-    log_success "Pre-hardening snapshot created at: $snapshot_archive"
+  echo "shm.options=$(findmnt -no OPTIONS /dev/shm 2>/dev/null || true)"
+
+  for u in "${DEFAULT_CLOUD_ACCOUNTS[@]}"; do
+    if id "$u" &>/dev/null && [ "$u" != "$NOVO_USUARIO" ]; then
+      u_shell="$(getent passwd "$u" | cut -d: -f7)"
+      u_pw="$(passwd -S "$u" 2>/dev/null | awk '{print $2}' || true)"
+      u_home="$(getent passwd "$u" | cut -d: -f6)"
+      u_keys=no
+      [ -f "$u_home/.ssh/authorized_keys" ] && u_keys=yes
+      echo "account.${u}=${u_shell}|${u_pw}|${u_keys}"
+    fi
+  done
+
+  echo "admin.user=${NOVO_USUARIO}"
+  if id "$NOVO_USUARIO" &>/dev/null; then
+    echo "admin.user_existed=yes"
+  else
+    echo "admin.user_existed=no"
+  fi
+}
+
+create_rollback_snapshot() {
+  local latest="$BACKUP_DIR/latest.tar.gz"
+
+  if [ -e "$latest" ]; then
+    ROLLBACK_SNAPSHOT_PATH="$(readlink -f "$latest")"
+    log_info "Original pre-hardening snapshot already exists: ${ROLLBACK_SNAPSHOT_PATH}"
+    log_info "Keeping it (snapshots are only created on the first run, so rollback always returns to the original state)."
+    return 0
+  fi
+
+  local timestamp
+  timestamp="$(date +%Y%m%d_%H%M%S)"
+  local snapshot_base="${BACKUP_DIR}/hardening_backup_${timestamp}"
+  local snapshot_archive="${snapshot_base}.tar.gz"
+
+  log_info "Creating pre-hardening rollback snapshot..."
+  install -d -m 700 -o root -g root "$BACKUP_DIR"
+
+  local files_to_backup=() item
+  for item in "${SNAPSHOT_PATHS[@]}"; do
+    [ -e "$item" ] && files_to_backup+=("${item#/}")
+  done
+
+  # The archive contains SSH host private keys: keep it root-only
+  local tar_rc=0
+  (umask 077 && tar -czpf "$snapshot_archive" -C / "${files_to_backup[@]}" 2>/dev/null) || tar_rc=$?
+  # GNU tar exits 1 when files changed while being read; anything higher is fatal
+  if [ "$tar_rc" -gt 1 ] || [ ! -s "$snapshot_archive" ]; then
+    log_error "Failed to create rollback snapshot at $snapshot_archive. Aborting before any change."
+    exit 1
+  fi
+
+  local manifest_paths=("${HARDENING_MANAGED_FILES[@]}") conf
+  for conf in /etc/ssh/sshd_config.d/*.conf; do
+    [ -e "$conf" ] && manifest_paths+=("${conf}.bak")
+  done
+  (
+    umask 077
+    for item in "${manifest_paths[@]}" "${HARDENING_MANAGED_DIRS[@]}"; do
+      [ -e "$item" ] || echo "$item"
+    done > "${snapshot_base}.created"
+    write_snapshot_state > "${snapshot_base}.state"
+  )
+
+  ln -sfn "$snapshot_archive" "$latest"
+  ROLLBACK_SNAPSHOT_PATH="$snapshot_archive"
+  log_success "Pre-hardening snapshot created at: $snapshot_archive"
+}
+
+# Rollback lives in rollback.sh (single implementation). Prefer the copy next to
+# this script, then the installed helper.
+run_rollback_tool() {
+  local tool=""
+  if [ -f "$SCRIPT_DIR/rollback.sh" ]; then
+    tool="$SCRIPT_DIR/rollback.sh"
+  elif [ -x /usr/local/sbin/hardening-rollback ]; then
+    tool="/usr/local/sbin/hardening-rollback"
+  else
+    log_error "Rollback utility not found (rollback.sh or /usr/local/sbin/hardening-rollback)."
+    echo "    Download it from ${REPO_RAW_URL}/rollback.sh" >&2
+    exit 1
+  fi
+  local args=()
+  [ "$ASSUME_YES" = true ] && args+=(--yes)
+  [ -n "$ROLLBACK_FILE" ] && args+=("$ROLLBACK_FILE")
+  exec bash "$tool" "${args[@]}"
+}
+
+# Installs verify.sh / rollback.sh as system commands (local copy or download)
+install_helper_tool() {
+  local src_name="$1"
+  local dest="$2"
+  if [ -f "$SCRIPT_DIR/$src_name" ]; then
+    install -m 755 -o root -g root "$SCRIPT_DIR/$src_name" "$dest"
+  elif curl -fsSL "${REPO_RAW_URL}/${src_name}" -o "${dest}.tmp" 2>/dev/null; then
+    install -m 755 -o root -g root "${dest}.tmp" "$dest"
+    rm -f "${dest}.tmp"
+  else
+    rm -f "${dest}.tmp"
+    log_warn "Could not install $dest (download of ${src_name} failed)."
+    return 1
   fi
 }
 
@@ -295,7 +406,7 @@ fi
 
 # Execute rollback immediately if requested
 if [ "$DO_ROLLBACK" = true ]; then
-  do_rollback "$ROLLBACK_FILE"
+  run_rollback_tool
 fi
 
 # ------------------------------------------------------------------
@@ -619,6 +730,9 @@ if [ "$DRY_RUN" = true ]; then
   run_dry_run_simulation
 else
   create_rollback_snapshot
+  log_info "Installing helper commands (verify-hardening, hardening-rollback)..."
+  install_helper_tool verify.sh /usr/local/bin/verify-hardening || true
+  install_helper_tool rollback.sh /usr/local/sbin/hardening-rollback || true
   echo ""
 fi
 
@@ -676,7 +790,7 @@ if id "$NOVO_USUARIO" &>/dev/null && id -nG "$NOVO_USUARIO" 2>/dev/null | grep -
   PASSWD_CHECK="$(passwd -S "$NOVO_USUARIO" 2>/dev/null | awk '{print $2}' || echo "L")"
   if [[ ! "$PASSWD_CHECK" =~ ^(L|NP)$ ]]; then
     DEFAULTS_SECURE=true
-    for u in ubuntu debian admin centos; do
+    for u in "${DEFAULT_CLOUD_ACCOUNTS[@]}"; do
       if id "$u" &>/dev/null && [ "$u" != "$NOVO_USUARIO" ]; then
         u_shell="$(getent passwd "$u" | cut -d: -f7)"
         u_pwd="$(passwd -S "$u" 2>/dev/null | awk '{print $2}' || echo "")"
@@ -729,7 +843,7 @@ else
   fi
 
   log_step "2.2 Neutralizing cloud provider default administrative accounts..."
-  for u in ubuntu debian admin centos; do
+  for u in "${DEFAULT_CLOUD_ACCOUNTS[@]}"; do
     if id "$u" &>/dev/null && [ "$u" != "$NOVO_USUARIO" ]; then
       passwd -l "$u" >/dev/null 2>&1 || true
       usermod -s /usr/sbin/nologin "$u" 2>/dev/null || true
@@ -838,6 +952,8 @@ EOF
   chmod 644 /etc/ssh/sshd_config.d/00-hardening.conf
 
   log_step "3.4 Validating OpenSSH configuration syntax..."
+  # With socket activation (Ubuntu 22.10+) /run/sshd only exists while ssh.service runs
+  install -d -m 755 /run/sshd
   if ! sshd -t; then
     log_error "SSH configuration syntax check failed! Aborting service reload to prevent lockout."
     rm -f /etc/ssh/sshd_config.d/00-hardening.conf
@@ -1401,19 +1517,6 @@ fi
 # ==================================================================
 # POST-HARDENING VERIFICATION & AUDIT SUITE
 # ==================================================================
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd || true)"
-
-# Install verify-hardening globally to /usr/local/bin
-if [ -f "$SCRIPT_DIR/verify.sh" ]; then
-  cp "$SCRIPT_DIR/verify.sh" /usr/local/bin/verify-hardening
-  chmod 755 /usr/local/bin/verify-hardening
-elif [ ! -f /usr/local/bin/verify-hardening ]; then
-  # Download if executed via pipe or standalone
-  REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main}"
-  curl -fsSL "${REPO_RAW_URL}/verify.sh" -o /usr/local/bin/verify-hardening 2>/dev/null || true
-  chmod 755 /usr/local/bin/verify-hardening 2>/dev/null || true
-fi
-
 if [ "$RUN_VERIFY" = true ]; then
   echo ""
   log_step "Running automated post-hardening security validation suite..."
@@ -1472,7 +1575,7 @@ echo ""
 echo -e "  ${C_BOLD}Rollback Snapshot:${C_RESET}"
 if [ -n "$ROLLBACK_SNAPSHOT_PATH" ]; then
   echo -e "    - Snapshot archive: ${C_CYAN}${ROLLBACK_SNAPSHOT_PATH}${C_RESET}"
-  echo -e "    - Instant rollback: ${C_CYAN}sudo ./hardening.sh --rollback${C_RESET} or ${C_CYAN}sudo ./rollback.sh${C_RESET}"
+  echo -e "    - Instant rollback: ${C_CYAN}sudo hardening-rollback${C_RESET} (or ${C_CYAN}sudo ./rollback.sh${C_RESET} / ${C_CYAN}sudo ./hardening.sh --rollback${C_RESET})"
 fi
 echo ""
 echo -e "  ${C_BOLD}Backups Created:${C_RESET}"
