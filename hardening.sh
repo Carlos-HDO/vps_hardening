@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 # Environment variables to avoid interactive package prompts
 export DEBIAN_FRONTEND=noninteractive

@@ -44,7 +44,7 @@ Clone the repository directly onto the VPS and run:
 ```bash
 git clone https://github.com/carlos-hdo/vps_hardening.git
 cd vps_hardening
-git checkout v1.0.0          # pin a released version (optional, recommended)
+git checkout v1.0.1          # pin a released version (optional, recommended)
 sudo ./hardening.sh
 ```
 
@@ -81,10 +81,10 @@ sudo ./hardening.sh -u operator -k "gh:carlos-hdo" -p 52211 -a 80,443 -y
 
 ```bash
 # Interactive wizard
-curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.0/quick-install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.1/quick-install.sh | sudo bash
 
 # Non-interactive, arguments passed through to hardening.sh
-curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.0/quick-install.sh \
+curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.1/quick-install.sh \
   | sudo bash -s -- -u operator -k "gh:carlos-hdo" -p 52211 --password-hash '<hash>' -y
 ```
 
@@ -93,8 +93,8 @@ curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.0/qui
 To verify the installer itself before running it:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.0/quick-install.sh
-curl -fsSLO https://github.com/carlos-hdo/vps_hardening/releases/download/v1.0.0/SHA256SUMS
+curl -fsSLO https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.1/quick-install.sh
+curl -fsSLO https://github.com/carlos-hdo/vps_hardening/releases/download/v1.0.1/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS && sudo bash quick-install.sh
 ```
 

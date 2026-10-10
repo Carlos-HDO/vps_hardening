@@ -15,7 +15,7 @@
 
 set -uo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 C_RESET="\033[0m"
 C_RED="\033[1;31m"
