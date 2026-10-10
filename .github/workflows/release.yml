@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags: [ "v*" ]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish release with SHA256SUMS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check that script versions match the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for f in hardening.sh verify.sh rollback.sh; do
+            grep -qx "VERSION=\"${version}\"" "$f" || { echo "$f does not declare VERSION=\"${version}\""; exit 1; }
+          done
+          grep -q "v${version}" quick-install.sh || { echo "quick-install.sh does not default to v${version}"; exit 1; }
+          grep -q "^## \[${version}\]" CHANGELOG.md || { echo "CHANGELOG.md has no [${version}] section"; exit 1; }
+
+      - name: Generate SHA256SUMS
+        run: sha256sum hardening.sh verify.sh rollback.sh quick-install.sh > SHA256SUMS
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          awk -v v="${GITHUB_REF_NAME#v}" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            hardening.sh verify.sh rollback.sh quick-install.sh SHA256SUMS \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file RELEASE_NOTES.md

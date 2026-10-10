@@ -2,7 +2,7 @@
 #
 # ==============================================================================
 # VPS Hardening Automation Tool
-# Compatible with Ubuntu 20.04/22.04/24.04 LTS and Debian 11/12+
+# Compatible with Ubuntu 20.04/22.04/24.04 LTS and Debian 12/13
 #
 # Usage Modes:
 #   1) Interactive (direct execution or via curl/wget | bash):
@@ -17,6 +17,8 @@
 # ==============================================================================
 
 set -euo pipefail
+
+VERSION="1.0.0"
 
 # Environment variables to avoid interactive package prompts
 export DEBIAN_FRONTEND=noninteractive
@@ -38,6 +40,10 @@ log_success() { echo -e "${C_GREEN}[✔]${C_RESET} $*"; }
 log_warn()    { echo -e "${C_YELLOW}[!]${C_RESET} $*"; }
 log_error()   { echo -e "${C_RED}[-] ERROR:${C_RESET} $*" >&2; }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" &>/dev/null && pwd)" || SCRIPT_DIR=""
+# Helper scripts are fetched from the release matching this script (used only when not running from a clone)
+REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v${VERSION}}"
+
 # Helper function for safe terminal input (even when piped from `curl ... | bash`)
 read_input() {
   local prompt="$1"
@@ -45,7 +51,7 @@ read_input() {
   local default_val="${3:-}"
   local value=""
 
-  if [ -c /dev/tty ]; then
+  if { : < /dev/tty; } 2>/dev/null; then
     read -r -p "$(echo -e "$prompt")" value < /dev/tty || true
   else
     read -r -p "$(echo -e "$prompt")" value || true
@@ -54,23 +60,27 @@ read_input() {
   if [ -z "$value" ] && [ -n "$default_val" ]; then
     value="$default_val"
   fi
-  eval "$varname=\"$value\""
+  printf -v "$varname" '%s' "$value"
 }
 
 # ------------------------------------------------------------------
 # Quick Help Check (-h / --help)
 # ------------------------------------------------------------------
-for arg in "$@"; do
-  if [ "$arg" = "-h" ] || [ "$arg" = "--help" ]; then
-    cat <<EOF
+show_help() {
+  cat <<EOF
 Usage: sudo $0 [options] or sudo $0 <user> "<ssh_key>" [port] [timezone]
 
 Options:
   -u, --user <username>       Name of the new administrative user
-  -k, --key "<ssh_key>"       Authorized public SSH key (ed25519, rsa, ecdsa)
+  -k, --key "<ssh_key>"       Authorized public SSH key (raw string, gh:username, or URL)
   -p, --port <port>           Custom SSH port (1024-65535, default: 52211)
   -t, --timezone <tz>         System timezone (e.g., UTC, America/New_York, America/Sao_Paulo)
   -a, --allow-ports <ports>   Additional incoming ports to allow in UFW (e.g. 80,443,51820/udp)
+  --password-hash '<hash>'    Crypt hash for the admin user's sudo password, used when the account
+                              has no password (required with -y; generate with: openssl passwd -6)
+  --safety-timer              Arm the auto-revert timer even with -y (default: on in interactive mode)
+  --no-safety-timer           Do not arm the auto-revert timer
+  --skip-upgrade              Skip 'apt-get upgrade' of installed packages in Phase 1
   --dry-run                   Simulate actions without making actual changes to the system
   --rollback [archive]        Restore system configuration from pre-hardening snapshot
   --tg-token <token>          Telegram Bot Token (from @BotFather) for login alerts
@@ -79,14 +89,24 @@ Options:
   --audit, --lynis            Run Lynis security audit scan after hardening
   --no-verify                 Skip automatic post-hardening verification tests
   -y, --yes                   Skip interactive confirmation prompt
+  -V, --version               Print the version and exit
   -h, --help                  Display this help message
 
 Examples:
   sudo $0 operator "ssh-ed25519 AAAAC3... vps-access" 52211
   sudo $0 -u operator -k "ssh-ed25519 AAAAC3..." -p 52211 -a 80,443 --tg-token "..." --tg-chat "..." -y
+  sudo $0 -u operator -k "gh:username" --password-hash "\$(openssl passwd -6)" -y
   sudo $0 --dry-run           # Test run simulation
   sudo $0 --rollback          # Restore previous configuration from latest backup
 EOF
+  exit 0
+}
+
+for arg in "$@"; do
+  if [ "$arg" = "-h" ] || [ "$arg" = "--help" ]; then
+    show_help
+  elif [ "$arg" = "-V" ] || [ "$arg" = "--version" ]; then
+    echo "vps_hardening ${VERSION}"
     exit 0
   fi
 done
@@ -126,6 +146,13 @@ TG_CHAT_ID="${HARDENING_TG_CHAT_ID:-}"
 WEBHOOK_URL="${HARDENING_WEBHOOK_URL:-}"
 RUN_AUDIT="${HARDENING_RUN_AUDIT:-false}"
 RUN_VERIFY=true
+SKIP_UPGRADE="${HARDENING_SKIP_UPGRADE:-false}"
+PASSWORD_HASH="${HARDENING_PASSWORD_HASH:-}"
+SAFETY_TIMER="${HARDENING_SAFETY_TIMER:-auto}"
+SAFETY_TIMER_MINUTES="${HARDENING_SAFETY_TIMER_MINUTES:-10}"
+SAFETY_TIMER_UNIT="vps-hardening-autorevert"
+SAFETY_TIMER_ARMED=false
+LYNIS_SCORE="N/A"
 ASSUME_YES=false
 ROLLBACK_SNAPSHOT_PATH=""
 IS_CONTAINER=false
@@ -153,123 +180,227 @@ detect_virtualization() {
 }
 detect_virtualization
 
-show_help() {
-  cat <<EOF
-Usage: sudo $0 [options] or sudo $0 <user> "<ssh_key>" [port] [timezone]
-
-Options:
-  -u, --user <username>       Name of the new administrative user
-  -k, --key "<ssh_key>"       Authorized public SSH key (raw string, gh:username, or URL)
-  -p, --port <port>           Custom SSH port (1024-65535, default: 52211)
-  -t, --timezone <tz>         System timezone (e.g., UTC, America/New_York, America/Sao_Paulo)
-  -a, --allow-ports <ports>   Additional incoming ports to allow in UFW (e.g. 80,443,51820/udp)
-  --dry-run                   Simulate actions without making actual changes to the system
-  --rollback [archive]        Restore system configuration from pre-hardening snapshot
-  --tg-token <token>          Telegram Bot Token (from @BotFather) for login alerts
-  --tg-chat <chat_id>         Telegram Chat ID (from @userinfobot) for login alerts
-  -w, --webhook <url>         Discord/Custom Webhook URL for real-time SSH login alerts
-  --audit, --lynis            Run Lynis security audit scan after hardening
-  --no-verify                 Skip automatic post-hardening verification tests
-  -y, --yes                   Skip interactive confirmation prompt
-  -h, --help                  Display this help message
-
-Examples:
-  sudo $0 operator "ssh-ed25519 AAAAC3... vps-access" 52211
-  sudo $0 -u operator -k "ssh-ed25519 AAAAC3..." -p 52211 -a 80,443 --tg-token "..." --tg-chat "..." -y
-  sudo $0 --dry-run           # Test run simulation
-  sudo $0 --rollback          # Restore previous configuration from latest backup
-EOF
-  exit 0
-}
-
 # ------------------------------------------------------------------
-# Rollback Implementation
+# Rollback Snapshot (created only on the first run)
 # ------------------------------------------------------------------
-do_rollback() {
-  local target_backup="${1:-}"
-  local backup_dir="/var/backups/vps_hardening"
+BACKUP_DIR="/var/backups/vps_hardening"
 
-  echo ""
-  echo -e "${C_BOLD}==========================================================${C_RESET}"
-  echo -e "${C_CYAN}${C_BOLD}          VPS HARDENING SYSTEM ROLLBACK${C_RESET}"
-  echo -e "${C_BOLD}==========================================================${C_RESET}"
-  echo ""
+# Paths archived in the snapshot (restored by rollback.sh)
+SNAPSHOT_PATHS=(
+  /etc/ssh
+  /etc/pam.d/sshd
+  /etc/sysctl.d
+  /etc/fstab
+  /etc/default/ufw
+  /etc/ufw
+  /etc/fail2ban
+  /etc/security/limits.d
+  /etc/modprobe.d
+  /etc/modules-load.d
+  /etc/apt/apt.conf.d/20auto-upgrades
+  /etc/systemd/coredump.conf.d
+  /usr/local/bin/ssh-login-alert.sh
+  /etc/vps-hardening
+)
 
-  if [ -z "$target_backup" ]; then
-    if [ -f "$backup_dir/latest.tar.gz" ]; then
-      target_backup="$backup_dir/latest.tar.gz"
-    elif compgen -G "$backup_dir/hardening_backup_*.tar.gz" > /dev/null; then
-      target_backup=$(ls -t "$backup_dir"/hardening_backup_*.tar.gz 2>/dev/null | head -n 1)
-    fi
-  fi
+# Files this script may create. Those absent before the first run are listed in
+# the .created manifest and deleted by rollback.sh.
+HARDENING_MANAGED_FILES=(
+  /etc/ssh/sshd_config.bak
+  /etc/ssh/sshd_config.d/00-hardening.conf
+  /etc/pam.d/sshd.bak
+  /etc/fail2ban/jail.local
+  /etc/sysctl.d/99-hardening.conf
+  /etc/modules-load.d/bbr.conf
+  /etc/apt/apt.conf.d/20auto-upgrades
+  /etc/security/limits.d/10-hardening-coredump.conf
+  /etc/systemd/coredump.conf.d/disable.conf
+  /etc/modprobe.d/hardening.conf
+  /usr/local/bin/ssh-login-alert.sh
+  /etc/vps-hardening/alert.conf
+)
 
-  if [ -z "$target_backup" ] || [ ! -f "$target_backup" ]; then
-    log_error "No rollback backup archive found in '$backup_dir'!"
-    echo "Usage: sudo $0 --rollback [/path/to/hardening_backup.tar.gz]"
-    exit 1
-  fi
+# Directories this script may create (removed by rollback.sh only if empty)
+HARDENING_MANAGED_DIRS=(
+  /etc/vps-hardening
+  /etc/systemd/coredump.conf.d
+  /etc/ssh/sshd_config.d
+)
 
-  log_warn "Target snapshot: ${C_BOLD}${target_backup}${C_RESET}"
-  if [ "$ASSUME_YES" = false ]; then
-    read -r -p "Are you sure you want to restore previous system configurations? [y/N]: " confirm_rb || true
-    if [[ ! "$confirm_rb" =~ ^[YySs]$ ]]; then
-      log_info "Rollback aborted by user."
-      exit 0
-    fi
-  fi
+# Kernel parameters changed in Phase 6 (original values saved in the .state file)
+HARDENING_SYSCTL_KEYS=(
+  net.ipv4.conf.all.accept_source_route
+  net.ipv4.conf.default.accept_source_route
+  net.ipv6.conf.all.accept_source_route
+  net.ipv4.conf.all.accept_redirects
+  net.ipv4.conf.default.accept_redirects
+  net.ipv6.conf.all.accept_redirects
+  net.ipv4.conf.all.send_redirects
+  net.ipv4.conf.all.rp_filter
+  net.ipv4.conf.default.rp_filter
+  net.ipv4.conf.all.log_martians
+  net.ipv4.tcp_syncookies
+  net.ipv4.icmp_echo_ignore_broadcasts
+  net.ipv4.icmp_ignore_bogus_error_responses
+  kernel.randomize_va_space
+  kernel.kptr_restrict
+  kernel.dmesg_restrict
+  fs.suid_dumpable
+  net.core.default_qdisc
+  net.ipv4.tcp_congestion_control
+)
 
-  log_info "Restoring files from snapshot..."
-  tar -xzf "$target_backup" -C /
+DEFAULT_CLOUD_ACCOUNTS=(ubuntu debian admin centos)
 
-  log_info "Reloading restored kernel parameters..."
-  sysctl --system >/dev/null 2>&1 || true
+write_snapshot_state() {
+  local unit enabled active key value u u_shell u_pw u_home u_keys
 
-  log_info "Validating OpenSSH configuration..."
-  if sshd -t 2>/dev/null; then
-    systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service 2>/dev/null || true
-    log_success "SSH service restarted with restored configuration."
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    echo "ufw.active=yes"
   else
-    log_warn "Warning: sshd configuration check reported errors. Check /etc/ssh/."
+    echo "ufw.active=no"
   fi
 
-  log_info "Restarting Fail2ban..."
-  systemctl restart fail2ban 2>/dev/null || true
+  for unit in ssh.service ssh.socket fail2ban auditd unattended-upgrades; do
+    enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    active="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    echo "service.${unit}.enabled=${enabled:-not-found}"
+    echo "service.${unit}.active=${active:-inactive}"
+  done
 
-  echo ""
-  log_success "Rollback successfully completed! System configurations restored from: $target_backup"
-  exit 0
-}
-
-create_rollback_snapshot() {
-  local backup_dir="/var/backups/vps_hardening"
-  local timestamp="$(date +%Y%m%d_%H%M%S)"
-  local snapshot_archive="${backup_dir}/hardening_backup_${timestamp}.tar.gz"
-
-  mkdir -p "$backup_dir"
-  log_info "Creating pre-hardening rollback snapshot..."
-
-  local files_to_backup=()
-  for item in \
-    /etc/ssh \
-    /etc/pam.d/sshd \
-    /etc/sysctl.d \
-    /etc/fstab \
-    /etc/default/ufw \
-    /etc/ufw \
-    /etc/fail2ban \
-    /etc/security/limits.d \
-    /etc/modprobe.d \
-    /etc/apt/apt.conf.d/20auto-upgrades; do
-    if [ -e "$item" ]; then
-      files_to_backup+=("${item#/}")
+  for key in "${HARDENING_SYSCTL_KEYS[@]}"; do
+    if value="$(sysctl -n "$key" 2>/dev/null)"; then
+      echo "sysctl.${key}=${value}"
     fi
   done
 
-  if [ ${#files_to_backup[@]} -gt 0 ]; then
-    tar -czf "$snapshot_archive" -C / "${files_to_backup[@]}" 2>/dev/null || true
-    ln -sf "$snapshot_archive" "$backup_dir/latest.tar.gz" 2>/dev/null || true
-    ROLLBACK_SNAPSHOT_PATH="$snapshot_archive"
-    log_success "Pre-hardening snapshot created at: $snapshot_archive"
+  echo "shm.options=$(findmnt -no OPTIONS /dev/shm 2>/dev/null || true)"
+
+  for u in "${DEFAULT_CLOUD_ACCOUNTS[@]}"; do
+    if id "$u" &>/dev/null && [ "$u" != "$NOVO_USUARIO" ]; then
+      u_shell="$(getent passwd "$u" | cut -d: -f7)"
+      u_pw="$(passwd -S "$u" 2>/dev/null | awk '{print $2}' || true)"
+      u_home="$(getent passwd "$u" | cut -d: -f6)"
+      u_keys=no
+      [ -f "$u_home/.ssh/authorized_keys" ] && u_keys=yes
+      echo "account.${u}=${u_shell}|${u_pw}|${u_keys}"
+    fi
+  done
+
+  echo "admin.user=${NOVO_USUARIO}"
+  if id "$NOVO_USUARIO" &>/dev/null; then
+    echo "admin.user_existed=yes"
+  else
+    echo "admin.user_existed=no"
+  fi
+}
+
+create_rollback_snapshot() {
+  local latest="$BACKUP_DIR/latest.tar.gz"
+
+  if [ -e "$latest" ]; then
+    ROLLBACK_SNAPSHOT_PATH="$(readlink -f "$latest")"
+    log_info "Original pre-hardening snapshot already exists: ${ROLLBACK_SNAPSHOT_PATH}"
+    log_info "Keeping it (snapshots are only created on the first run, so rollback always returns to the original state)."
+    return 0
+  fi
+
+  local timestamp
+  timestamp="$(date +%Y%m%d_%H%M%S)"
+  local snapshot_base="${BACKUP_DIR}/hardening_backup_${timestamp}"
+  local snapshot_archive="${snapshot_base}.tar.gz"
+
+  log_info "Creating pre-hardening rollback snapshot..."
+  install -d -m 700 -o root -g root "$BACKUP_DIR"
+
+  local files_to_backup=() item
+  for item in "${SNAPSHOT_PATHS[@]}"; do
+    [ -e "$item" ] && files_to_backup+=("${item#/}")
+  done
+
+  # The archive contains SSH host private keys: keep it root-only
+  local tar_rc=0
+  (umask 077 && tar -czpf "$snapshot_archive" -C / "${files_to_backup[@]}" 2>/dev/null) || tar_rc=$?
+  # GNU tar exits 1 when files changed while being read; anything higher is fatal
+  if [ "$tar_rc" -gt 1 ] || [ ! -s "$snapshot_archive" ]; then
+    log_error "Failed to create rollback snapshot at $snapshot_archive. Aborting before any change."
+    exit 1
+  fi
+
+  local manifest_paths=("${HARDENING_MANAGED_FILES[@]}") conf
+  for conf in /etc/ssh/sshd_config.d/*.conf; do
+    [ -e "$conf" ] && manifest_paths+=("${conf}.bak")
+  done
+  (
+    umask 077
+    for item in "${manifest_paths[@]}" "${HARDENING_MANAGED_DIRS[@]}"; do
+      [ -e "$item" ] || echo "$item"
+    done > "${snapshot_base}.created"
+    write_snapshot_state > "${snapshot_base}.state"
+  )
+
+  ln -sfn "$snapshot_archive" "$latest"
+  ROLLBACK_SNAPSHOT_PATH="$snapshot_archive"
+  log_success "Pre-hardening snapshot created at: $snapshot_archive"
+}
+
+# Rollback lives in rollback.sh (single implementation). Prefer the copy next to
+# this script, then the installed helper.
+run_rollback_tool() {
+  local tool=""
+  if [ -f "$SCRIPT_DIR/rollback.sh" ]; then
+    tool="$SCRIPT_DIR/rollback.sh"
+  elif [ -x /usr/local/sbin/hardening-rollback ]; then
+    tool="/usr/local/sbin/hardening-rollback"
+  else
+    log_error "Rollback utility not found (rollback.sh or /usr/local/sbin/hardening-rollback)."
+    echo "    Download it from ${REPO_RAW_URL}/rollback.sh" >&2
+    exit 1
+  fi
+  local args=()
+  [ "$ASSUME_YES" = true ] && args+=(--yes)
+  [ -n "$ROLLBACK_FILE" ] && args+=("$ROLLBACK_FILE")
+  exec bash "$tool" "${args[@]}"
+}
+
+# Installs verify.sh / rollback.sh as system commands (local copy or download)
+install_helper_tool() {
+  local src_name="$1"
+  local dest="$2"
+  if [ -f "$SCRIPT_DIR/$src_name" ]; then
+    install -m 755 -o root -g root "$SCRIPT_DIR/$src_name" "$dest"
+  elif curl -fsSL "${REPO_RAW_URL}/${src_name}" -o "${dest}.tmp" 2>/dev/null; then
+    install -m 755 -o root -g root "${dest}.tmp" "$dest"
+    rm -f "${dest}.tmp"
+  else
+    rm -f "${dest}.tmp"
+    log_warn "Could not install $dest (download of ${src_name} failed)."
+    return 1
+  fi
+}
+
+# ------------------------------------------------------------------
+# Auto-Revert Safety Timer (runs hardening-rollback unless the user confirms)
+# ------------------------------------------------------------------
+disarm_safety_timer() {
+  systemctl stop "${SAFETY_TIMER_UNIT}.timer" >/dev/null 2>&1 || true
+  systemctl reset-failed "${SAFETY_TIMER_UNIT}.timer" "${SAFETY_TIMER_UNIT}.service" >/dev/null 2>&1 || true
+  SAFETY_TIMER_ARMED=false
+}
+
+arm_safety_timer() {
+  local minutes="$1"
+  disarm_safety_timer
+  if ! command -v systemd-run >/dev/null 2>&1 || [ ! -x /usr/local/sbin/hardening-rollback ] || [ -z "$ROLLBACK_SNAPSHOT_PATH" ]; then
+    log_warn "Safety timer unavailable (requires systemd-run, /usr/local/sbin/hardening-rollback and a snapshot). Continuing without automatic revert."
+    return 0
+  fi
+  if systemd-run --quiet --unit="$SAFETY_TIMER_UNIT" --on-active="${minutes}min" --timer-property=AccuracySec=1s \
+       /usr/local/sbin/hardening-rollback --yes "$ROLLBACK_SNAPSHOT_PATH"; then
+    SAFETY_TIMER_ARMED=true
+    log_warn "Safety timer armed: automatic rollback at $(date -d "+${minutes} min" +%H:%M) unless confirmed."
+  else
+    log_warn "Could not arm the safety timer. Continuing without automatic revert."
   fi
 }
 
@@ -285,6 +416,10 @@ if [ "$#" -gt 0 ]; then
         -p|--port)          SSH_PORT="$2"; shift 2 ;;
         -t|--timezone)      TIMEZONE="$2"; shift 2 ;;
         -a|--allow-ports)   ALLOW_PORTS="$2"; shift 2 ;;
+        --skip-upgrade)     SKIP_UPGRADE=true; shift 1 ;;
+        --password-hash)    PASSWORD_HASH="$2"; shift 2 ;;
+        --safety-timer)     SAFETY_TIMER=true; shift 1 ;;
+        --no-safety-timer)  SAFETY_TIMER=false; shift 1 ;;
         --dry-run)          DRY_RUN=true; shift 1 ;;
         --rollback)
           DO_ROLLBACK=true
@@ -302,7 +437,7 @@ if [ "$#" -gt 0 ]; then
         --no-verify)        RUN_VERIFY=false; shift 1 ;;
         -y|--yes)           ASSUME_YES=true; shift 1 ;;
         -h|--help)          show_help ;;
-        *) log_error "Unknown parameter: $1"; show_help ;;
+        *) log_error "Unknown parameter: $1"; echo "Run '$0 --help' for usage." >&2; exit 1 ;;
       esac
     done
   else
@@ -316,7 +451,7 @@ fi
 
 # Execute rollback immediately if requested
 if [ "$DO_ROLLBACK" = true ]; then
-  do_rollback "$ROLLBACK_FILE"
+  run_rollback_tool
 fi
 
 # ------------------------------------------------------------------
@@ -324,7 +459,7 @@ fi
 # ------------------------------------------------------------------
 if [ -z "$NOVO_USUARIO" ] || [ -z "$CHAVE_SSH" ]; then
   echo -e "${C_BOLD}==========================================================${C_RESET}"
-  echo -e "${C_CYAN}${C_BOLD}          VPS HARDENING CONFIGURATION WIZARD${C_RESET}"
+  echo -e "${C_CYAN}${C_BOLD}          VPS HARDENING CONFIGURATION WIZARD${C_RESET} ${C_DIM}v${VERSION}${C_RESET}"
   echo -e "${C_BOLD}==========================================================${C_RESET}"
   echo ""
 
@@ -355,6 +490,7 @@ if [ -z "$NOVO_USUARIO" ] || [ -z "$CHAVE_SSH" ]; then
 
   read_input "${C_YELLOW}?${C_RESET} Custom SSH Port [${SSH_PORT}]: " INPUT_PORT "$SSH_PORT"
   SSH_PORT="$INPUT_PORT"
+  echo -e "    ${C_DIM}ℹ️  If your provider has its own firewall (Hetzner, AWS, DigitalOcean...), allow ${SSH_PORT}/tcp there too.${C_RESET}"
 
   read_input "${C_YELLOW}?${C_RESET} Server Timezone [${TIMEZONE}]: " INPUT_TZ "$TIMEZONE"
   TIMEZONE="$INPUT_TZ"
@@ -446,11 +582,45 @@ if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1024 ] || [ "$SSH_PORT" 
   exit 1
 fi
 
+# 4. Password hash validation (crypt format: $6$..., $y$..., $5$..., $2b$...)
+if [ -n "$PASSWORD_HASH" ] && ! [[ "$PASSWORD_HASH" =~ ^\$[0-9a-z]+\$[./0-9A-Za-z$=,]+$ ]]; then
+  log_error "Invalid --password-hash: expected a crypt hash such as '\$6\$...' (never a plain-text password)."
+  echo "    Generate one with: openssl passwd -6" >&2
+  exit 1
+fi
+
+# 5. The admin account needs a password for sudo. Without a TTY or with -y, it must come from --password-hash.
+ADMIN_NEEDS_PASSWORD=false
+if ! id "$NOVO_USUARIO" &>/dev/null || [[ "$(passwd -S "$NOVO_USUARIO" 2>/dev/null | awk '{print $2}' || echo L)" =~ ^(L|NP)$ ]]; then
+  ADMIN_NEEDS_PASSWORD=true
+fi
+if [ "$ADMIN_NEEDS_PASSWORD" = true ] && [ -z "$PASSWORD_HASH" ]; then
+  if [ "$ASSUME_YES" = true ] || ! { : < /dev/tty; } 2>/dev/null; then
+    if [ "$DRY_RUN" = true ]; then
+      log_warn "User '${NOVO_USUARIO}' has no password: a real non-interactive run requires --password-hash."
+    else
+      log_error "User '${NOVO_USUARIO}' has no password and none can be asked interactively (-y or no terminal)."
+      echo "    Pass a crypt hash for the sudo password: --password-hash \"\$(openssl passwd -6)\"" >&2
+      echo "    No changes were made to the system." >&2
+      exit 1
+    fi
+  fi
+fi
+
+# 6. Safety timer default: on for interactive runs, off with -y (nobody is there to confirm)
+if [ "$SAFETY_TIMER" = auto ]; then
+  if [ "$ASSUME_YES" = true ]; then
+    SAFETY_TIMER=false
+  else
+    SAFETY_TIMER=true
+  fi
+fi
+
 # ------------------------------------------------------------------
 # Plan Confirmation
 # ------------------------------------------------------------------
 echo ""
-echo -e "${C_BOLD}--- Hardening Parameters ---${C_RESET}"
+echo -e "${C_BOLD}--- Hardening Parameters (vps_hardening v${VERSION}) ---${C_RESET}"
 echo -e "  New User:          ${C_GREEN}${NOVO_USUARIO}${C_RESET}"
 echo -e "  SSH Public Key:    ${C_GREEN}${CHAVE_SSH:0:40}...${C_RESET}"
 echo -e "  New SSH Port:      ${C_GREEN}${SSH_PORT}${C_RESET}"
@@ -464,10 +634,17 @@ else
   echo -e "  SSH Login Alert:   ${C_YELLOW}Not Configured (Optional — active only if Telegram or Webhook is provided)${C_RESET}"
 fi
 echo -e "  Lynis Audit Scan:  ${C_GREEN}${RUN_AUDIT}${C_RESET}"
+if [ "$SAFETY_TIMER" = true ]; then
+  echo -e "  Safety Timer:      ${C_GREEN}auto-revert in ${SAFETY_TIMER_MINUTES} min unless you confirm the new SSH login${C_RESET}"
+else
+  echo -e "  Safety Timer:      ${C_YELLOW}disabled${C_RESET}"
+fi
 if [ "$DRY_RUN" = true ]; then
   echo -e "  Execution Mode:    ${C_YELLOW}${C_BOLD}DRY-RUN (SIMULATION ONLY)${C_RESET}"
 fi
 echo -e "${C_BOLD}----------------------------${C_RESET}"
+echo ""
+log_warn "Make sure port ${C_BOLD}${SSH_PORT}/tcp${C_RESET} is also allowed in your provider's firewall (Hetzner Cloud Firewall, AWS Security Group, DigitalOcean Cloud Firewall, etc.)."
 
 echo ""
 
@@ -481,100 +658,124 @@ if [ "$ASSUME_YES" = false ]; then
 fi
 
 run_dry_run_simulation() {
+  local p p_clean
   echo -e "${C_YELLOW}${C_BOLD}==============================================================================${C_RESET}"
   echo -e "${C_YELLOW}${C_BOLD}   ⚠️  SIMULATION MODE (DRY-RUN) ACTIVE — NO SYSTEM CHANGES WILL BE MADE       ${C_RESET}"
   echo -e "${C_YELLOW}${C_BOLD}==============================================================================${C_RESET}"
   echo ""
   echo -e "${C_CYAN}${C_BOLD}[*] Running full pre-flight simulation of all 11 hardening phases...${C_RESET}"
   echo ""
-  
+
+  echo -e "${C_BOLD}Pre-flight: Rollback Snapshot & Helper Commands${C_RESET}"
+  if [ -e "$BACKUP_DIR/latest.tar.gz" ]; then
+    echo -e "  [DRY-RUN] Original snapshot already exists ($(readlink -f "$BACKUP_DIR/latest.tar.gz")) — would keep it"
+  else
+    echo -e "  [DRY-RUN] Would create root-only snapshot ${BACKUP_DIR}/hardening_backup_<timestamp>.tar.gz"
+    echo -e "            plus .created (files this run creates) and .state (services, UFW, sysctl, accounts)"
+  fi
+  echo -e "  [DRY-RUN] Would install /usr/local/bin/verify-hardening and /usr/local/sbin/hardening-rollback"
+  echo ""
+
   echo -e "${C_BOLD}Phase 1: Base System & Time Synchronization${C_RESET}"
-  echo -e "  [DRY-RUN] Would update package lists: apt-get update -qq"
-  echo -e "  [DRY-RUN] Would ensure essential dependencies: apt-get install -y sudo curl"
-  echo -e "  [DRY-RUN] Would upgrade existing packages: apt-get upgrade -y"
+  echo -e "  [DRY-RUN] Would update package lists: apt-get update"
+  if [ "$SKIP_UPGRADE" = true ]; then
+    echo -e "  [DRY-RUN] Package upgrade skipped (--skip-upgrade)"
+  else
+    echo -e "  [DRY-RUN] Would upgrade installed packages: apt-get upgrade -y"
+  fi
+  echo -e "  [DRY-RUN] Would ensure baseline tools: apt-get install -y sudo curl tmux"
   echo -e "  [DRY-RUN] Would configure system timezone to '${TIMEZONE}' via timedatectl"
   echo -e "  [DRY-RUN] Would enable network time synchronization (NTP)"
   echo ""
 
-  echo -e "${C_BOLD}Phase 2: Administrative User Provisioning & Neutralization${C_RESET}"
+  echo -e "${C_BOLD}Phase 2: Administrative User & Cloud Account Neutralization${C_RESET}"
   echo -e "  [DRY-RUN] Would verify or create user '${NOVO_USUARIO}' with bash shell"
-  echo -e "  [DRY-RUN] Would append '${NOVO_USUARIO}' to sudo group (usermod -aG sudo ${NOVO_USUARIO})"
-  echo -e "  [DRY-RUN] Would enforce password setup for sudo authentication"
-  echo -e "  [DRY-RUN] Would neutralize default accounts (ubuntu, debian, admin, centos):"
+  echo -e "  [DRY-RUN] Would add '${NOVO_USUARIO}' to the sudo group (usermod -aG sudo ${NOVO_USUARIO})"
+  if [ -n "$PASSWORD_HASH" ]; then
+    echo -e "  [DRY-RUN] Would set the sudo password from --password-hash if the account has none"
+  else
+    echo -e "  [DRY-RUN] Would prompt for a sudo password if the account has none"
+  fi
+  echo -e "  [DRY-RUN] Would neutralize default accounts (${DEFAULT_CLOUD_ACCOUNTS[*]}):"
   echo -e "            - Lock passwords (passwd -l)"
   echo -e "            - Set shell to /usr/sbin/nologin"
   echo -e "            - Rename .ssh/authorized_keys to authorized_keys.disabled"
   echo ""
 
-  echo -e "${C_BOLD}Phase 3: OpenSSH Cryptographic & Protocol Hardening${C_RESET}"
-  echo -e "  [DRY-RUN] Would create ${NOVO_USUARIO} SSH directory: ~/.ssh (mode 700)"
-  echo -e "  [DRY-RUN] Would install public key in ~/.ssh/authorized_keys (mode 600)"
-  echo -e "  [DRY-RUN] Would backup /etc/ssh/sshd_config to /etc/ssh/sshd_config.bak"
-  echo -e "  [DRY-RUN] Would sanitize /etc/ssh/sshd_config and neutralize overriding directives"
-  echo -e "  [DRY-RUN] Would deploy drop-in configuration /etc/ssh/sshd_config.d/00-hardening.conf:"
+  echo -e "${C_BOLD}Phase 3: OpenSSH Hardening${C_RESET}"
+  echo -e "  [DRY-RUN] Would install public key(s) in ~${NOVO_USUARIO}/.ssh/authorized_keys (dir 700, file 600)"
+  echo -e "  [DRY-RUN] Would back up /etc/ssh/sshd_config to /etc/ssh/sshd_config.bak (first run only)"
+  echo -e "  [DRY-RUN] Would comment out conflicting directives in sshd_config and sshd_config.d/*.conf (*.bak backups)"
+  echo -e "  [DRY-RUN] Would write /etc/ssh/sshd_config.d/00-hardening.conf:"
   echo -e "            - Port ${SSH_PORT}"
   echo -e "            - PermitRootLogin no"
-  echo -e "            - PasswordAuthentication no"
+  echo -e "            - PasswordAuthentication no / PermitEmptyPasswords no / KbdInteractiveAuthentication no"
   echo -e "            - PubkeyAuthentication yes"
-  echo -e "            - MaxAuthTries 3"
   echo -e "            - X11Forwarding no"
+  echo -e "            - MaxAuthTries 3 / LoginGraceTime 20"
   echo -e "            - AllowUsers ${NOVO_USUARIO}"
-  echo -e "  [DRY-RUN] Would test OpenSSH syntax: sshd -t"
-  echo -e "  [DRY-RUN] Would restart ssh/sshd systemd service"
+  echo -e "            - ClientAliveInterval 300 / ClientAliveCountMax 2"
+  echo -e "  [DRY-RUN] Would validate syntax with 'sshd -t' (aborts on error)"
+  echo -e "  [DRY-RUN] If UFW is already active, would open ${SSH_PORT}/tcp before restarting SSH"
+  if [ "$SAFETY_TIMER" = true ]; then
+    echo -e "  [DRY-RUN] Would arm the auto-revert safety timer (systemd-run ${SAFETY_TIMER_UNIT})"
+  fi
+  echo -e "  [DRY-RUN] Would disable ssh.socket (socket activation) and restart ssh.service"
   echo ""
 
-  echo -e "${C_BOLD}Phase 4: UFW Stateful Firewall Automation${C_RESET}"
-  echo -e "  [DRY-RUN] Would ensure ufw package is installed"
-  echo -e "  [DRY-RUN] Would configure default policies: incoming: deny, outgoing: allow, routed: deny"
-  echo -e "  [DRY-RUN] Would rate-limit SSH access on custom port: ufw limit ${SSH_PORT}/tcp"
+  echo -e "${C_BOLD}Phase 4: Stateful Firewall (UFW)${C_RESET}"
+  echo -e "  [DRY-RUN] Would install ufw and enable IPv6 rules (/etc/default/ufw)"
+  echo -e "  [DRY-RUN] Would set default policies: deny incoming, allow outgoing"
+  echo -e "  [DRY-RUN] Would rate-limit SSH: ufw limit ${SSH_PORT}/tcp"
   if [ -n "$ALLOW_PORTS" ]; then
     IFS=',' read -ra ADDR <<< "$ALLOW_PORTS"
     for p in "${ADDR[@]}"; do
       p_clean=$(echo "$p" | tr -d '[:space:]')
-      [ -n "$p_clean" ] && echo -e "  [DRY-RUN] Would open additional firewall port: ufw allow ${p_clean}"
+      [ -n "$p_clean" ] && echo -e "  [DRY-RUN] Would allow additional port: ufw allow ${p_clean}"
     done
   fi
   echo -e "  [DRY-RUN] Would enable firewall: ufw --force enable"
   echo ""
 
-  echo -e "${C_BOLD}Phase 5: Fail2ban Intrusion Prevention System${C_RESET}"
-  echo -e "  [DRY-RUN] Would install fail2ban package"
-  echo -e "  [DRY-RUN] Would configure /etc/fail2ban/jail.d/00-ssh-hardening.local:"
-  echo -e "            - jail: sshd, port: ${SSH_PORT}, maxretry: 5, findtime: 10m, bantime: 1h"
-  echo -e "  [DRY-RUN] Would enable and start fail2ban systemd service"
+  echo -e "${C_BOLD}Phase 5: Intrusion Prevention & Brute-Force Defense (Fail2ban)${C_RESET}"
+  echo -e "  [DRY-RUN] Would install fail2ban"
+  echo -e "  [DRY-RUN] Would write /etc/fail2ban/jail.local:"
+  echo -e "            - [DEFAULT] backend: systemd, ignoreip: loopback + RFC1918, bantime 1h, findtime 10m, maxretry 4"
+  echo -e "            - [DEFAULT] progressive bans: bantime.increment, factor 2, max 7 days"
+  echo -e "            - [sshd] port: ${SSH_PORT}, maxretry: 3, findtime: 5m, bantime: 2h"
+  echo -e "  [DRY-RUN] Would enable and restart the fail2ban service"
   echo ""
 
-  echo -e "${C_BOLD}Phase 6: Kernel Sysctl Network & Memory Hardening${C_RESET}"
-  echo -e "  [DRY-RUN] Detected virtualization hypervisor: ${VIRT_ENV}"
-  echo -e "  [DRY-RUN] Would deploy /etc/sysctl.d/99-hardening.conf:"
-  echo -e "            - TCP SYN cookies enabled (DoS mitigation)"
-  echo -e "            - IP spoofing / reverse-path filtering (rp_filter = 1)"
-  echo -e "            - ICMP redirect acceptance/sending disabled"
-  echo -e "            - Source routing disabled"
-  echo -e "            - Address space layout randomization (ASLR = 2)"
-  echo -e "            - Core dump suid restrictions (fs.suid_dumpable = 0)"
-  echo -e "            - TCP BBR congestion control & fair queuing (FQ) enabled"
+  echo -e "${C_BOLD}Phase 6: Kernel Hardening (sysctl) & Network Optimization${C_RESET}"
+  echo -e "  [DRY-RUN] Detected virtualization: ${VIRT_ENV} ($([ "$IS_CONTAINER" = true ] && echo "container profile" || echo "full profile"))"
+  echo -e "  [DRY-RUN] Would write /etc/sysctl.d/99-hardening.conf:"
+  echo -e "            - Source routing and ICMP redirects disabled"
+  echo -e "            - Reverse-path filtering (rp_filter = 1) and martian logging"
+  echo -e "            - TCP SYN cookies, broadcast/bogus ICMP ignored"
+  echo -e "            - fs.suid_dumpable = 0"
+  if [ "$IS_CONTAINER" = false ]; then
+    echo -e "            - ASLR (randomize_va_space = 2), kptr_restrict = 2, dmesg_restrict = 1"
+    echo -e "            - TCP BBR congestion control & fair queuing (FQ), tcp_bbr in /etc/modules-load.d/bbr.conf"
+  else
+    echo -e "            - TCP BBR & FQ only if the host kernel offers bbr"
+  fi
   echo -e "  [DRY-RUN] Would load kernel parameters: sysctl --system"
   echo ""
 
-  echo -e "${C_BOLD}Phase 7: Automated Security Updates (Unattended-Upgrades)${C_RESET}"
+  echo -e "${C_BOLD}Phase 7: Automatic Security Updates (Unattended-Upgrades)${C_RESET}"
   echo -e "  [DRY-RUN] Would install unattended-upgrades and apt-listchanges"
-  echo -e "  [DRY-RUN] Would configure /etc/apt/apt.conf.d/20auto-upgrades for daily updates"
-  echo -e "  [DRY-RUN] Would restart unattended-upgrades systemd service"
+  echo -e "  [DRY-RUN] Would write /etc/apt/apt.conf.d/20auto-upgrades (daily lists update + unattended upgrade)"
+  echo -e "  [DRY-RUN] Would enable the unattended-upgrades service"
   echo ""
 
-  echo -e "${C_BOLD}Phase 8: Shared Memory & /tmp Hardening (CIS Benchmark)${C_RESET}"
-  echo -e "  [DRY-RUN] Would configure /dev/shm in /etc/fstab with nodev,nosuid,noexec"
-  echo -e "  [DRY-RUN] Would remount /dev/shm with restrictive mount options: mount -o remount,nodev,nosuid,noexec /dev/shm"
+  echo -e "${C_BOLD}Phase 8: Filesystem & Memory Protection (CIS Benchmark)${C_RESET}"
+  echo -e "  [DRY-RUN] Would set /dev/shm to nodev,nosuid,noexec in /etc/fstab and remount it"
+  echo -e "  [DRY-RUN] Would write /etc/security/limits.d/10-hardening-coredump.conf (* hard/soft core 0)"
+  echo -e "  [DRY-RUN] Would write /etc/systemd/coredump.conf.d/disable.conf (Storage=none, ProcessSizeMax=0)"
   echo ""
 
-  echo -e "${C_BOLD}Phase 9: Process Core Dump Disablement${C_RESET}"
-  echo -e "  [DRY-RUN] Would deploy /etc/security/limits.d/10-hardening-coredump.conf (* hard core 0)"
-  echo -e "  [DRY-RUN] Would configure /etc/systemd/coredump.conf (Storage=none, ProcessSizeMax=0)"
-  echo ""
-
-  echo -e "${C_BOLD}Phase 10: Legacy Kernel Network Protocols Blacklist${C_RESET}"
-  echo -e "  [DRY-RUN] Would deploy /etc/modprobe.d/hardening.conf:"
+  echo -e "${C_BOLD}Phase 9: Legacy Network Protocols Blacklist (Modprobe)${C_RESET}"
+  echo -e "  [DRY-RUN] Would write /etc/modprobe.d/hardening.conf:"
   echo -e "            - install dccp /bin/true"
   echo -e "            - install sctp /bin/true"
   echo -e "            - install rds /bin/true"
@@ -582,51 +783,43 @@ run_dry_run_simulation() {
   echo -e "            - install firewire-core /bin/true"
   echo ""
 
-  echo -e "${C_BOLD}Phase 11: Security Auditing (Auditd & Lynis)${C_RESET}"
-  echo -e "  [DRY-RUN] Would install and activate auditd service"
+  echo -e "${C_BOLD}Phase 10: System Security Auditing (Auditd & Lynis)${C_RESET}"
+  echo -e "  [DRY-RUN] Would install, enable and start auditd"
   if [ "$RUN_AUDIT" = true ]; then
-    echo -e "  [DRY-RUN] Would install Lynis and run automated security benchmark: lynis audit system --quick"
+    echo -e "  [DRY-RUN] Would install Lynis and run: lynis audit system --quick (report: /var/log/lynis-hardening-report.txt)"
   else
     echo -e "  [DRY-RUN] Lynis audit scan skipped (use --audit to enable)"
   fi
   echo ""
 
   if { [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; } || [ -n "$WEBHOOK_URL" ]; then
-    echo -e "${C_BOLD}Phase 11: Real-Time SSH Login Alerts${C_RESET}"
-    echo -e "  [DRY-RUN] Would install dispatcher script: /usr/local/bin/ssh-login-alert.sh"
+    echo -e "${C_BOLD}Phase 11: Real-Time SSH Login Alerts (PAM)${C_RESET}"
+    echo -e "  [DRY-RUN] Would store credentials in /etc/vps-hardening/alert.conf (root only, mode 600)"
+    echo -e "  [DRY-RUN] Would install dispatcher /usr/local/bin/ssh-login-alert.sh (root only, mode 700)"
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-      echo -e "  [DRY-RUN] Notification Provider: Telegram (Chat ID: ${TG_CHAT_ID})"
+      echo -e "  [DRY-RUN] Notification provider: Telegram (Chat ID: ${TG_CHAT_ID})"
     else
-      echo -e "  [DRY-RUN] Notification Provider: Webhook (${WEBHOOK_URL:0:30}...)"
+      echo -e "  [DRY-RUN] Notification provider: Webhook (${WEBHOOK_URL:0:30}...)"
     fi
-    echo -e "  [DRY-RUN] Would attach asynchronous PAM session hook to /etc/pam.d/sshd"
-    echo ""
+    echo -e "  [DRY-RUN] Would append a pam_exec session hook to /etc/pam.d/sshd (backup: /etc/pam.d/sshd.bak)"
   else
     echo -e "${C_BOLD}Phase 11: Real-Time SSH Login Alerts (Optional)${C_RESET}"
-    echo -e "  [DRY-RUN] Not configured — If Telegram (--tg-token / --tg-chat) or Webhook (--webhook) is not provided, this step will not be activated."
-    echo ""
+    echo -e "  [DRY-RUN] Not configured — provide --tg-token/--tg-chat or --webhook to enable it."
   fi
+  echo ""
+
+  echo -e "${C_BOLD}Post-run${C_RESET}"
+  if [ "$RUN_VERIFY" = true ]; then
+    echo -e "  [DRY-RUN] Would run the verification suite: verify-hardening --port ${SSH_PORT} --user ${NOVO_USUARIO}"
+  fi
+  if [ "$SAFETY_TIMER" = true ]; then
+    echo -e "  [DRY-RUN] Would reset the safety timer to ${SAFETY_TIMER_MINUTES} min and wait for you to type CONFIRM"
+  fi
+  echo ""
 
   echo -e "${C_BOLD}==============================================================================${C_RESET}"
   echo -e "${C_YELLOW}${C_BOLD}                   ✔ DRY-RUN SIMULATION COMPLETED!                           ${C_RESET}"
   echo -e "${C_BOLD}==============================================================================${C_RESET}"
-  echo ""
-  echo -e "  ${C_BOLD}Simulated Hardening Baseline:${C_RESET}"
-  echo -e "    - Administrative User: ${NOVO_USUARIO} (sudo member, public key deployed)"
-  echo -e "    - Hardened SSH Port:   ${SSH_PORT} (root login: no, password auth: no)"
-  echo -e "    - UFW Firewall:        default-deny, limit port ${SSH_PORT}$([ -n "$ALLOW_PORTS" ] && echo ", allow: ${ALLOW_PORTS}")"
-  echo -e "    - Fail2ban:            sshd jail on port ${SSH_PORT}"
-  echo -e "    - Kernel sysctl:       security profile for '${VIRT_ENV}' hypervisor"
-  echo -e "    - Network throughput:  TCP BBR Congestion Control & Fair Queuing (FQ)"
-  echo -e "    - Shared Memory:       /dev/shm nodev,nosuid,noexec"
-  echo -e "    - Process coredumps:   disabled in limits and systemd"
-  echo -e "    - Kernel protocols:    dccp, sctp, rds, tipc, firewire-core disabled"
-  echo -e "    - System auditing:     auditd active$([ "$RUN_AUDIT" = true ] && echo ", Lynis security benchmark scan")"
-  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-    echo -e "    - Telegram alerts:     configured for Chat ID ${TG_CHAT_ID}"
-  elif [ -n "$WEBHOOK_URL" ]; then
-    echo -e "    - SSH login alerts:    configured via webhook"
-  fi
   echo ""
   echo -e "  ${C_GREEN}Zero changes were made to your system.${C_RESET}"
   echo -e "  To execute hardening for real, re-run without the --dry-run flag."
@@ -640,6 +833,9 @@ if [ "$DRY_RUN" = true ]; then
   run_dry_run_simulation
 else
   create_rollback_snapshot
+  log_info "Installing helper commands (verify-hardening, hardening-rollback)..."
+  install_helper_tool verify.sh /usr/local/bin/verify-hardening || true
+  install_helper_tool rollback.sh /usr/local/sbin/hardening-rollback || true
   echo ""
 fi
 
@@ -650,32 +846,39 @@ log_info "Starting hardening process..."
 # ==================================================================
 echo ""
 log_step "Phase 1 — Base System & Time Synchronization"
-log_info "Objective: Update package repositories, install essential utilities (sudo, curl), and synchronize clock via NTP."
+log_info "Objective: Update package repositories, install essential utilities (sudo, curl, tmux), and synchronize clock via NTP."
 
-PHASE1_ALREADY_CONFIGURED=false
+if [ "$SKIP_UPGRADE" = true ]; then
+  log_step "1.1 Updating package lists (package upgrade skipped via --skip-upgrade)..."
+  apt-get update -qq
+else
+  log_step "1.1 Updating package lists and upgrading installed packages..."
+  apt-get update -qq
+  apt-get upgrade -y -qq
+  log_success "Installed packages upgraded."
+fi
+
+if command -v sudo >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && command -v tmux >/dev/null 2>&1; then
+  log_success "1.2 Baseline tools (sudo, curl, tmux) are already installed. Skipping..."
+else
+  log_step "1.2 Installing baseline packages (sudo, curl, tmux)..."
+  apt-get install -y -qq sudo curl tmux
+fi
+
 CURRENT_TZ="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
 NTP_SYNC="$(timedatectl status 2>/dev/null | grep -E 'NTP service: active|Network time on: yes|System clock synchronized: yes' || true)"
 
-if command -v sudo >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && [ -n "$NTP_SYNC" ] && ([ "$CURRENT_TZ" = "$TIMEZONE" ] || [ -z "$TIMEZONE" ]); then
-  PHASE1_ALREADY_CONFIGURED=true
-fi
-
-if [ "$PHASE1_ALREADY_CONFIGURED" = true ]; then
-  log_success "Phase 1: Base system, essential tools (sudo, curl), timezone ($TIMEZONE), and NTP are already configured at standard. Skipping..."
+if [ -n "$NTP_SYNC" ] && { [ "$CURRENT_TZ" = "$TIMEZONE" ] || [ -z "$TIMEZONE" ]; }; then
+  log_success "1.3 Timezone ($TIMEZONE) and NTP synchronization are already configured at standard. Skipping..."
 else
-  log_step "1.1 Updating package repositories and installing baseline packages (sudo, curl)..."
-  apt-get update -qq
-  apt-get install -y -qq sudo curl
-  apt-get upgrade -y -qq
-
-  log_step "1.2 Configuring Timezone ($TIMEZONE) and NTP synchronization..."
+  log_step "1.3 Configuring Timezone ($TIMEZONE) and NTP synchronization..."
   if timedatectl list-timezones | grep -qx "$TIMEZONE"; then
     timedatectl set-timezone "$TIMEZONE"
   else
     log_warn "Timezone '$TIMEZONE' not found on system. Keeping current timezone."
   fi
   timedatectl set-ntp true 2>/dev/null || true
-  log_success "Base system updated and system clock synchronized."
+  log_success "System clock synchronized."
 fi
 
 # ==================================================================
@@ -690,7 +893,7 @@ if id "$NOVO_USUARIO" &>/dev/null && id -nG "$NOVO_USUARIO" 2>/dev/null | grep -
   PASSWD_CHECK="$(passwd -S "$NOVO_USUARIO" 2>/dev/null | awk '{print $2}' || echo "L")"
   if [[ ! "$PASSWD_CHECK" =~ ^(L|NP)$ ]]; then
     DEFAULTS_SECURE=true
-    for u in ubuntu debian admin centos; do
+    for u in "${DEFAULT_CLOUD_ACCOUNTS[@]}"; do
       if id "$u" &>/dev/null && [ "$u" != "$NOVO_USUARIO" ]; then
         u_shell="$(getent passwd "$u" | cut -d: -f7)"
         u_pwd="$(passwd -S "$u" 2>/dev/null | awk '{print $2}' || echo "")"
@@ -731,10 +934,13 @@ else
 
   # Set password if account is locked or has no password (required for sudo)
   PASSWD_STATUS="$(passwd -S "$NOVO_USUARIO" 2>/dev/null | awk '{print $2}' || echo "L")"
-  if [[ "$PASSWD_STATUS" =~ ^(L|NP)$ ]]; then
+  if [[ "$PASSWD_STATUS" =~ ^(L|NP)$ ]] && [ -n "$PASSWORD_HASH" ]; then
+    usermod -p "$PASSWORD_HASH" "$NOVO_USUARIO"
+    log_success "Sudo password for '${NOVO_USUARIO}' set from --password-hash."
+  elif [[ "$PASSWD_STATUS" =~ ^(L|NP)$ ]]; then
     echo ""
     log_warn "ATTENTION: Set the password for '${NOVO_USUARIO}' (required for sudo):"
-    if [ -c /dev/tty ]; then
+    if { : < /dev/tty; } 2>/dev/null; then
       passwd "$NOVO_USUARIO" < /dev/tty
     else
       passwd "$NOVO_USUARIO"
@@ -743,7 +949,7 @@ else
   fi
 
   log_step "2.2 Neutralizing cloud provider default administrative accounts..."
-  for u in ubuntu debian admin centos; do
+  for u in "${DEFAULT_CLOUD_ACCOUNTS[@]}"; do
     if id "$u" &>/dev/null && [ "$u" != "$NOVO_USUARIO" ]; then
       passwd -l "$u" >/dev/null 2>&1 || true
       usermod -s /usr/sbin/nologin "$u" 2>/dev/null || true
@@ -852,6 +1058,8 @@ EOF
   chmod 644 /etc/ssh/sshd_config.d/00-hardening.conf
 
   log_step "3.4 Validating OpenSSH configuration syntax..."
+  # With socket activation (Ubuntu 22.10+) /run/sshd only exists while ssh.service runs
+  install -d -m 755 /run/sshd
   if ! sshd -t; then
     log_error "SSH configuration syntax check failed! Aborting service reload to prevent lockout."
     rm -f /etc/ssh/sshd_config.d/00-hardening.conf
@@ -860,6 +1068,15 @@ EOF
   log_success "SSH configuration syntax is valid."
 
   log_step "3.5 Resolving socket activation (Ubuntu 22.10+) and restarting SSH..."
+  # If UFW is already active, open the new port before sshd moves to it
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw limit "$SSH_PORT"/tcp comment 'SSH Hardened Port' >/dev/null
+    log_info "UFW already active: opened ${SSH_PORT}/tcp before restarting SSH."
+  fi
+  if [ "$SAFETY_TIMER" = true ]; then
+    # Generous window covering the remaining phases; reset to SAFETY_TIMER_MINUTES at the end
+    arm_safety_timer 60
+  fi
   systemctl disable --now ssh.socket 2>/dev/null || true
   systemctl enable ssh.service >/dev/null 2>&1 || true
   systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service
@@ -952,8 +1169,8 @@ fi
 if [ "$PHASE5_ALREADY_CONFIGURED" = true ]; then
   log_success "Phase 5: Fail2ban is already active and configured at standard monitoring port $SSH_PORT. Skipping..."
 else
-  log_step "5. Installing and configuring fail2ban and tmux..."
-  apt-get install -y -qq fail2ban tmux
+  log_step "5. Installing and configuring fail2ban..."
+  apt-get install -y -qq fail2ban
 
   cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
@@ -1253,6 +1470,11 @@ fi
 
 if [ "$PHASE10_ALREADY_CONFIGURED" = true ]; then
   log_success "Phase 10: System audit daemon (auditd) is already installed and active at standard. Skipping..."
+  if [ "$RUN_AUDIT" = true ] && [ -f /var/log/lynis-hardening-report.txt ]; then
+    LYNIS_SCORE="$(grep -E 'Hardening index' /var/log/lynis-hardening-report.txt | awk -F: '{print $2}' | tr -d ' ' || true)"
+    LYNIS_SCORE="${LYNIS_SCORE:-N/A}"
+    log_info "Previous Lynis report found: Hardening Index ${C_BOLD}${LYNIS_SCORE}${C_RESET} (/var/log/lynis-hardening-report.txt)"
+  fi
 else
   log_step "10.1 Installing and configuring auditd system audit daemon..."
   apt-get install -y -qq auditd
@@ -1260,13 +1482,13 @@ else
   systemctl start auditd 2>/dev/null || true
   log_success "auditd service installed and active."
 
-  LYNIS_SCORE="N/A"
   if [ "$RUN_AUDIT" = true ]; then
     log_step "10.2 Installing Lynis and running security audit baseline..."
     apt-get install -y -qq lynis
     log_info "Executing Lynis security audit (this may take 1-2 minutes)..."
     lynis audit system --quick --no-colors > /var/log/lynis-hardening-report.txt 2>&1 || true
-    LYNIS_SCORE=$(grep -E 'Hardening index' /var/log/lynis-hardening-report.txt | awk -F: '{print $2}' | tr -d ' ' || echo "Checked")
+    LYNIS_SCORE="$(grep -E 'Hardening index' /var/log/lynis-hardening-report.txt | awk -F: '{print $2}' | tr -d ' ' || true)"
+    LYNIS_SCORE="${LYNIS_SCORE:-N/A}"
     log_success "Lynis audit complete! Hardening Index: ${C_BOLD}${LYNIS_SCORE}${C_RESET} (Report: /var/log/lynis-hardening-report.txt)"
   fi
 fi
@@ -1278,38 +1500,62 @@ echo ""
 log_step "Phase 11 — Real-Time SSH Login Alerts (PAM)"
 log_info "Objective: Dispatch instant notifications upon every SSH login to the server (Optional)."
 
-if ([ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]) || [ -n "$WEBHOOK_URL" ]; then
+if { [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; } || [ -n "$WEBHOOK_URL" ]; then
+  # Credentials live in a root-only config file (never inside the world-readable script).
+  # printf %q keeps any character (&, |, quotes) intact when the file is sourced.
+  ALERT_CONF_DESIRED="$(printf 'TG_BOT_TOKEN=%q\nTG_CHAT_ID=%q\nWEBHOOK_URL=%q\n' "$TG_BOT_TOKEN" "$TG_CHAT_ID" "$WEBHOOK_URL")"
+
   PHASE11_ALREADY_CONFIGURED=false
-  if [ -f /usr/local/bin/ssh-login-alert.sh ] && [ -f /etc/pam.d/sshd ] && grep -q 'ssh-login-alert.sh' /etc/pam.d/sshd; then
-    if [ -n "$TG_BOT_TOKEN" ] && grep -q "$TG_BOT_TOKEN" /usr/local/bin/ssh-login-alert.sh 2>/dev/null; then
-      PHASE11_ALREADY_CONFIGURED=true
-    elif [ -n "$WEBHOOK_URL" ] && grep -q "$WEBHOOK_URL" /usr/local/bin/ssh-login-alert.sh 2>/dev/null; then
-      PHASE11_ALREADY_CONFIGURED=true
-    fi
+  if [ -f /usr/local/bin/ssh-login-alert.sh ] && grep -qF 'ALERT_CONF="/etc/vps-hardening/alert.conf"' /usr/local/bin/ssh-login-alert.sh && \
+     [ -f /etc/vps-hardening/alert.conf ] && [ "$(cat /etc/vps-hardening/alert.conf)" = "$ALERT_CONF_DESIRED" ] && \
+     [ -f /etc/pam.d/sshd ] && grep -q 'ssh-login-alert.sh' /etc/pam.d/sshd; then
+    PHASE11_ALREADY_CONFIGURED=true
   fi
 
   if [ "$PHASE11_ALREADY_CONFIGURED" = true ]; then
     log_success "Phase 11: Real-time SSH login alerts (PAM) are already configured at standard. Skipping..."
   else
-    log_step "11. Configuring real-time SSH login notifications via PAM..."
+    log_step "11.1 Storing alert credentials in /etc/vps-hardening/alert.conf (root only, mode 600)..."
+    install -d -m 700 -o root -g root /etc/vps-hardening
+    (umask 077 && printf '%s\n' "$ALERT_CONF_DESIRED" > /etc/vps-hardening/alert.conf)
+    chown root:root /etc/vps-hardening/alert.conf
+    chmod 600 /etc/vps-hardening/alert.conf
+
+    log_step "11.2 Installing dispatcher /usr/local/bin/ssh-login-alert.sh and PAM session hook..."
     cat > /usr/local/bin/ssh-login-alert.sh <<'EOF'
 #!/usr/bin/env bash
-# Real-time SSH Login Notification Dispatcher for Telegram & Webhooks
+# /usr/local/bin/ssh-login-alert.sh
+# Real-time SSH Login Notification Dispatcher for Telegram, Discord, or Generic Webhooks
+# Triggered automatically via PAM session in /etc/pam.d/sshd
+# Credentials are read from /etc/vps-hardening/alert.conf (root:root, mode 600)
 set -euo pipefail
 
-TG_BOT_TOKEN="__TG_BOT_TOKEN_PLACEHOLDER__"
-TG_CHAT_ID="__TG_CHAT_ID_PLACEHOLDER__"
-WEBHOOK_URL="__WEBHOOK_URL_PLACEHOLDER__"
+ALERT_CONF="/etc/vps-hardening/alert.conf"
+TG_BOT_TOKEN=""
+TG_CHAT_ID=""
+WEBHOOK_URL=""
 
-if [ "${PAM_TYPE:-}" = "open_session" ]; then
-  HOST="$(hostname)"
-  USER="${PAM_USER:-unknown}"
-  IP="${PAM_RHOST:-unknown}"
-  DATE="$(date "+%Y-%m-%d %H:%M:%S %Z")"
+[ "${PAM_TYPE:-}" = "open_session" ] || exit 0
+[ -r "$ALERT_CONF" ] || exit 0
+# shellcheck source=/dev/null
+. "$ALERT_CONF"
 
-  # 1. Telegram Bot API Dispatch (HTML Format)
-  if [ -n "$TG_BOT_TOKEN" ] && [ "$TG_BOT_TOKEN" != "none" ] && [ -n "$TG_CHAT_ID" ] && [ "$TG_CHAT_ID" != "none" ]; then
-    TG_MSG="🚨 <b>VPS SSH LOGIN ALERT</b>
+# Escape backslashes and double quotes for safe embedding in JSON strings
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+HOST="$(hostname)"
+USER="${PAM_USER:-unknown}"
+IP="${PAM_RHOST:-unknown}"
+DATE="$(date "+%Y-%m-%d %H:%M:%S %Z")"
+
+# 1. Telegram Bot API Dispatch (HTML Format)
+if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+  TG_MSG="🚨 <b>VPS SSH LOGIN ALERT</b>
 ━━━━━━━━━━━━━━━━━━
 🖥️ <b>Server:</b> <code>${HOST}</code>
 👤 <b>User:</b> <code>${USER}</code>
@@ -1318,46 +1564,49 @@ if [ "${PAM_TYPE:-}" = "open_session" ]; then
 ━━━━━━━━━━━━━━━━━━
 ⚠️ <i>If this was not you, verify active sessions immediately!</i>"
 
-    curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-      -d "chat_id=${TG_CHAT_ID}" \
-      -d "parse_mode=HTML" \
-      --data-urlencode "text=${TG_MSG}" >/dev/null 2>&1 &
-  fi
+  curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+    -d "chat_id=${TG_CHAT_ID}" \
+    -d "parse_mode=HTML" \
+    --data-urlencode "text=${TG_MSG}" >/dev/null 2>&1 &
+fi
 
-  # 2. Discord Webhook Dispatch
-  if [[ "$WEBHOOK_URL" =~ discord(app)?\.com/api/webhooks ]]; then
-    JSON_PAYLOAD=$(cat <<JSON
+J_HOST="$(json_escape "$HOST")"
+J_USER="$(json_escape "$USER")"
+J_IP="$(json_escape "$IP")"
+J_DATE="$(json_escape "$DATE")"
+
+# 2. Discord Webhook Dispatch
+if [[ "$WEBHOOK_URL" =~ discord(app)?\.com/api/webhooks ]]; then
+  JSON_PAYLOAD=$(cat <<JSON
 {
   "embeds": [{
     "title": "🚨 VPS SSH Login Alert",
     "color": 3066993,
     "fields": [
-      {"name": "Server", "value": "${HOST}", "inline": true},
-      {"name": "User", "value": "${USER}", "inline": true},
-      {"name": "Remote IP", "value": "${IP}", "inline": false},
-      {"name": "Timestamp", "value": "${DATE}", "inline": false}
+      {"name": "Server", "value": "${J_HOST}", "inline": true},
+      {"name": "User", "value": "${J_USER}", "inline": true},
+      {"name": "Remote IP", "value": "${J_IP}", "inline": false},
+      {"name": "Timestamp", "value": "${J_DATE}", "inline": false}
     ]
   }]
 }
 JSON
 )
-    curl -fsSL -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$WEBHOOK_URL" >/dev/null 2>&1 &
-  elif [ -n "$WEBHOOK_URL" ] && [ "$WEBHOOK_URL" != "none" ]; then
-    # Generic Webhook JSON POST
-    JSON_PAYLOAD=$(cat <<JSON
-{"event":"ssh_login","server":"${HOST}","user":"${USER}","remote_ip":"${IP}","timestamp":"${DATE}"}
+  curl -fsSL -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$WEBHOOK_URL" >/dev/null 2>&1 &
+
+# 3. Generic Webhook JSON POST
+elif [ -n "$WEBHOOK_URL" ]; then
+  JSON_PAYLOAD=$(cat <<JSON
+{"event":"ssh_login","server":"${J_HOST}","user":"${J_USER}","remote_ip":"${J_IP}","timestamp":"${J_DATE}"}
 JSON
 )
-    curl -fsSL -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$WEBHOOK_URL" >/dev/null 2>&1 &
-  fi
+  curl -fsSL -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$WEBHOOK_URL" >/dev/null 2>&1 &
 fi
+
 exit 0
 EOF
-
-    sed -i "s|__TG_BOT_TOKEN_PLACEHOLDER__|$TG_BOT_TOKEN|g" /usr/local/bin/ssh-login-alert.sh
-    sed -i "s|__TG_CHAT_ID_PLACEHOLDER__|$TG_CHAT_ID|g" /usr/local/bin/ssh-login-alert.sh
-    sed -i "s|__WEBHOOK_URL_PLACEHOLDER__|$WEBHOOK_URL|g" /usr/local/bin/ssh-login-alert.sh
-    chmod 755 /usr/local/bin/ssh-login-alert.sh
+    chown root:root /usr/local/bin/ssh-login-alert.sh
+    chmod 700 /usr/local/bin/ssh-login-alert.sh
 
     if [ -f /etc/pam.d/sshd ]; then
       [ -f /etc/pam.d/sshd.bak ] || cp /etc/pam.d/sshd /etc/pam.d/sshd.bak
@@ -1368,10 +1617,8 @@ EOF
 
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
       log_info "Testing Telegram bot connection..."
-      TEST_MSG="🛡️ <b>VPS Hardening Alert Activated!</b>%0AServer: <code>$(hostname)</code>%0APort: <code>${SSH_PORT}</code>"
       curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
         -d "chat_id=${TG_CHAT_ID}" \
-        -d "parse_mode=HTML" \
         --data-urlencode "text=🛡️ VPS Hardening Alert Activated for $(hostname) on port ${SSH_PORT}" >/dev/null 2>&1 || true
       log_success "Telegram SSH login alert configured and connected to Chat ID: ${TG_CHAT_ID}."
     else
@@ -1385,19 +1632,6 @@ fi
 # ==================================================================
 # POST-HARDENING VERIFICATION & AUDIT SUITE
 # ==================================================================
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd || true)"
-
-# Install verify-hardening globally to /usr/local/bin
-if [ -f "$SCRIPT_DIR/verify.sh" ]; then
-  cp "$SCRIPT_DIR/verify.sh" /usr/local/bin/verify-hardening
-  chmod 755 /usr/local/bin/verify-hardening
-elif [ ! -f /usr/local/bin/verify-hardening ]; then
-  # Download if executed via pipe or standalone
-  REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main}"
-  curl -fsSL "${REPO_RAW_URL}/verify.sh" -o /usr/local/bin/verify-hardening 2>/dev/null || true
-  chmod 755 /usr/local/bin/verify-hardening 2>/dev/null || true
-fi
-
 if [ "$RUN_VERIFY" = true ]; then
   echo ""
   log_step "Running automated post-hardening security validation suite..."
@@ -1456,14 +1690,45 @@ echo ""
 echo -e "  ${C_BOLD}Rollback Snapshot:${C_RESET}"
 if [ -n "$ROLLBACK_SNAPSHOT_PATH" ]; then
   echo -e "    - Snapshot archive: ${C_CYAN}${ROLLBACK_SNAPSHOT_PATH}${C_RESET}"
-  echo -e "    - Instant rollback: ${C_CYAN}sudo ./hardening.sh --rollback${C_RESET} or ${C_CYAN}sudo ./rollback.sh${C_RESET}"
+  echo -e "    - Instant rollback: ${C_CYAN}sudo hardening-rollback${C_RESET} (or ${C_CYAN}sudo ./rollback.sh${C_RESET} / ${C_CYAN}sudo ./hardening.sh --rollback${C_RESET})"
 fi
 echo ""
 echo -e "  ${C_BOLD}Backups Created:${C_RESET}"
 echo -e "    - /etc/ssh/sshd_config.bak and /etc/ssh/sshd_config.d/*.conf.bak (SSH backups)"
-if ([ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]) || [ -n "$WEBHOOK_URL" ]; then
+if { [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; } || [ -n "$WEBHOOK_URL" ]; then
   echo -e "    - /etc/pam.d/sshd.bak (PAM SSH backup)"
 fi
 echo -e "    - /home/*/.ssh/authorized_keys.disabled (disabled default provider keys)"
 echo ""
 echo -e "${C_BOLD}==============================================================================${C_RESET}"
+
+# ==================================================================
+# SAFETY TIMER CONFIRMATION
+# ==================================================================
+if [ "$SAFETY_TIMER_ARMED" = true ]; then
+  # Fresh window from now, so the user has the full time to test the new login
+  arm_safety_timer "$SAFETY_TIMER_MINUTES"
+fi
+if [ "$SAFETY_TIMER_ARMED" = true ]; then
+  echo ""
+  echo -e "${C_YELLOW}${C_BOLD}  ⏱️  SAFETY TIMER ACTIVE — the system will be rolled back automatically in ${SAFETY_TIMER_MINUTES} minute(s).${C_RESET}"
+  echo -e "  1) Test the login in a ${C_BOLD}NEW terminal${C_RESET} (Step 1 above)."
+  echo -e "  2) If it works, type ${C_BOLD}CONFIRM${C_RESET} below to keep the hardening."
+  echo -e "  ${C_DIM}You can also confirm later with: sudo systemctl stop ${SAFETY_TIMER_UNIT}.timer${C_RESET}"
+  echo ""
+  while true; do
+    CONFIRM_TIMER=""
+    read_input "${C_YELLOW}?${C_RESET} Type CONFIRM to keep the changes (Enter = leave timer running): " CONFIRM_TIMER ""
+    if [ "${CONFIRM_TIMER^^}" = "CONFIRM" ]; then
+      disarm_safety_timer
+      log_success "Safety timer cancelled. Hardening is now permanent."
+      break
+    elif [ -z "$CONFIRM_TIMER" ]; then
+      log_warn "Timer still running: automatic rollback at $(date -d "+${SAFETY_TIMER_MINUTES} min" +%H:%M) unless you run 'sudo systemctl stop ${SAFETY_TIMER_UNIT}.timer'."
+      break
+    else
+      log_warn "Please type exactly CONFIRM (or press Enter to leave the timer running)."
+    fi
+  done
+  echo ""
+fi

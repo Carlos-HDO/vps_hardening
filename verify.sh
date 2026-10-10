@@ -10,11 +10,13 @@
 # Options:
 #   -p, --port <port>       Target SSH port to verify (auto-detected if omitted)
 #   -u, --user <username>   Target admin user to verify (auto-detected if omitted)
-#   --embedded              Compact format when called directly from hardening.sh
+#   --embedded              Accepted for compatibility (no effect)
 #   -h, --help              Show this help message
 # ==============================================================================
 
 set -uo pipefail
+
+VERSION="1.0.0"
 
 # Terminal colors and formatting
 C_RESET="\033[0m"
@@ -32,7 +34,6 @@ PASSED_TESTS=0
 FAILED_TESTS=0
 WARN_TESTS=0
 
-EMBEDDED_MODE=false
 CUSTOM_PORT=""
 CUSTOM_USER=""
 
@@ -48,8 +49,12 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --embedded)
-      EMBEDDED_MODE=true
+      # Accepted for compatibility with older hardening.sh versions (no-op)
       shift
+      ;;
+    -V|--version)
+      echo "vps_hardening verify ${VERSION}"
+      exit 0
       ;;
     -h|--help)
       cat <<EOF
@@ -58,7 +63,8 @@ Usage: sudo $0 [options]
 Options:
   -p, --port <port>       Target SSH port (default: auto-detected or 52211)
   -u, --user <username>   Target admin username (default: auto-detected)
-  --embedded              Compact output format for automated installers
+  --embedded              Accepted for compatibility (no effect)
+  -V, --version           Print the version and exit
   -h, --help              Display this help message
 EOF
       exit 0
@@ -180,7 +186,7 @@ if [ -z "$TARGET_USER" ]; then
 fi
 
 echo -e "${C_BOLD}==============================================================================${C_RESET}"
-echo -e "${C_BOLD}${C_GREEN}             VPS HARDENING SECURITY VERIFICATION SUITE                        ${C_RESET}"
+echo -e "${C_BOLD}${C_GREEN}             VPS HARDENING SECURITY VERIFICATION SUITE  ${C_RESET}${C_DIM}v${VERSION}${C_RESET}"
 echo -e "${C_BOLD}==============================================================================${C_RESET}"
 echo -e "  ${C_DIM}Host:${C_RESET} $(hostname) | ${C_DIM}OS:${C_RESET} $(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '\"' || uname -s) | ${C_DIM}Virt:${C_RESET} ${VIRT_ENV}"
 echo -e "  ${C_DIM}Target Port:${C_RESET} ${TARGET_PORT} | ${C_DIM}Admin User:${C_RESET} ${TARGET_USER}"
@@ -564,22 +570,34 @@ if [ -f /etc/pam.d/sshd ] && grep -q 'ssh-login-alert.sh' /etc/pam.d/sshd; then
   PAM_CONFIGURED=true
 fi
 
-if [ -f /usr/local/bin/ssh-login-alert.sh ]; then
-  if [ -x /usr/local/bin/ssh-login-alert.sh ]; then
-    if [ "$PAM_CONFIGURED" = true ]; then
-      # Check if token is filled or placeholder
-      if grep -qE 'TG_BOT_TOKEN="[0-9]+:[A-Za-z0-9_-]+"' /usr/local/bin/ssh-login-alert.sh; then
-        check_pass "SSH Login Alerts" "Telegram Bot dispatch active via PAM"
-      elif grep -qE 'WEBHOOK_URL="https?://[^"]+"' /usr/local/bin/ssh-login-alert.sh; then
-        check_pass "SSH Login Alerts" "Discord / Custom Webhook active via PAM"
-      else
-        check_warn "SSH Login Alerts" "PAM hook active, but tokens are placeholders or empty"
-      fi
-    else
-      check_warn "SSH Login Alerts" "script exists but PAM hook in /etc/pam.d/sshd is missing"
-    fi
+ALERT_SCRIPT="/usr/local/bin/ssh-login-alert.sh"
+ALERT_CONF="/etc/vps-hardening/alert.conf"
+
+# Returns 0 if KEY has a non-empty value in alert.conf (values are written with printf %q)
+alert_conf_has() {
+  grep -E "^$1=" "$ALERT_CONF" 2>/dev/null | grep -qvx "$1=''"
+}
+
+if [ -f "$ALERT_SCRIPT" ]; then
+  if grep -qE '^(TG_BOT_TOKEN="[0-9]+:|WEBHOOK_URL="https?://)' "$ALERT_SCRIPT" 2>/dev/null; then
+    check_fail "SSH alert credentials storage" "secrets embedded in ${ALERT_SCRIPT} — re-run hardening.sh to move them to ${ALERT_CONF}"
+  elif [ ! -x "$ALERT_SCRIPT" ]; then
+    check_warn "SSH Login Alerts" "${ALERT_SCRIPT} is not executable"
+  elif [ "$PAM_CONFIGURED" = false ]; then
+    check_warn "SSH Login Alerts" "script exists but PAM hook in /etc/pam.d/sshd is missing"
+  elif [ ! -f "$ALERT_CONF" ]; then
+    check_warn "SSH Login Alerts" "PAM hook active, but ${ALERT_CONF} is missing"
   else
-    check_warn "SSH Login Alerts" "/usr/local/bin/ssh-login-alert.sh is not executable"
+    ALERT_CONF_PERM="$(stat -c '%a %U' "$ALERT_CONF" 2>/dev/null || true)"
+    if [ "$ALERT_CONF_PERM" != "600 root" ]; then
+      check_fail "SSH alert credentials storage" "${ALERT_CONF} must be mode 600 owned by root (found: ${ALERT_CONF_PERM:-unknown})"
+    elif alert_conf_has TG_BOT_TOKEN && alert_conf_has TG_CHAT_ID; then
+      check_pass "SSH Login Alerts" "Telegram Bot dispatch active via PAM"
+    elif alert_conf_has WEBHOOK_URL; then
+      check_pass "SSH Login Alerts" "Discord / Custom Webhook active via PAM"
+    else
+      check_warn "SSH Login Alerts" "PAM hook active, but no notification channel in ${ALERT_CONF}"
+    fi
   fi
 else
   check_info "SSH Login Alerts: Not configured (Optional phase — inactive if Telegram or Webhook was not provided)"
