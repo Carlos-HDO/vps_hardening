@@ -73,6 +73,10 @@ Options:
   -p, --port <port>           Custom SSH port (1024-65535, default: 52211)
   -t, --timezone <tz>         System timezone (e.g., UTC, America/New_York, America/Sao_Paulo)
   -a, --allow-ports <ports>   Additional incoming ports to allow in UFW (e.g. 80,443,51820/udp)
+  --password-hash '<hash>'    Crypt hash for the admin user's sudo password, used when the account
+                              has no password (required with -y; generate with: openssl passwd -6)
+  --safety-timer              Arm the auto-revert timer even with -y (default: on in interactive mode)
+  --no-safety-timer           Do not arm the auto-revert timer
   --skip-upgrade              Skip 'apt-get upgrade' of installed packages in Phase 1
   --dry-run                   Simulate actions without making actual changes to the system
   --rollback [archive]        Restore system configuration from pre-hardening snapshot
@@ -87,6 +91,7 @@ Options:
 Examples:
   sudo $0 operator "ssh-ed25519 AAAAC3... vps-access" 52211
   sudo $0 -u operator -k "ssh-ed25519 AAAAC3..." -p 52211 -a 80,443 --tg-token "..." --tg-chat "..." -y
+  sudo $0 -u operator -k "gh:username" --password-hash "\$(openssl passwd -6)" -y
   sudo $0 --dry-run           # Test run simulation
   sudo $0 --rollback          # Restore previous configuration from latest backup
 EOF
@@ -135,6 +140,11 @@ WEBHOOK_URL="${HARDENING_WEBHOOK_URL:-}"
 RUN_AUDIT="${HARDENING_RUN_AUDIT:-false}"
 RUN_VERIFY=true
 SKIP_UPGRADE="${HARDENING_SKIP_UPGRADE:-false}"
+PASSWORD_HASH="${HARDENING_PASSWORD_HASH:-}"
+SAFETY_TIMER="${HARDENING_SAFETY_TIMER:-auto}"
+SAFETY_TIMER_MINUTES="${HARDENING_SAFETY_TIMER_MINUTES:-10}"
+SAFETY_TIMER_UNIT="vps-hardening-autorevert"
+SAFETY_TIMER_ARMED=false
 LYNIS_SCORE="N/A"
 ASSUME_YES=false
 ROLLBACK_SNAPSHOT_PATH=""
@@ -363,6 +373,31 @@ install_helper_tool() {
 }
 
 # ------------------------------------------------------------------
+# Auto-Revert Safety Timer (runs hardening-rollback unless the user confirms)
+# ------------------------------------------------------------------
+disarm_safety_timer() {
+  systemctl stop "${SAFETY_TIMER_UNIT}.timer" >/dev/null 2>&1 || true
+  systemctl reset-failed "${SAFETY_TIMER_UNIT}.timer" "${SAFETY_TIMER_UNIT}.service" >/dev/null 2>&1 || true
+  SAFETY_TIMER_ARMED=false
+}
+
+arm_safety_timer() {
+  local minutes="$1"
+  disarm_safety_timer
+  if ! command -v systemd-run >/dev/null 2>&1 || [ ! -x /usr/local/sbin/hardening-rollback ] || [ -z "$ROLLBACK_SNAPSHOT_PATH" ]; then
+    log_warn "Safety timer unavailable (requires systemd-run, /usr/local/sbin/hardening-rollback and a snapshot). Continuing without automatic revert."
+    return 0
+  fi
+  if systemd-run --quiet --unit="$SAFETY_TIMER_UNIT" --on-active="${minutes}min" --timer-property=AccuracySec=1s \
+       /usr/local/sbin/hardening-rollback --yes "$ROLLBACK_SNAPSHOT_PATH"; then
+    SAFETY_TIMER_ARMED=true
+    log_warn "Safety timer armed: automatic rollback at $(date -d "+${minutes} min" +%H:%M) unless confirmed."
+  else
+    log_warn "Could not arm the safety timer. Continuing without automatic revert."
+  fi
+}
+
+# ------------------------------------------------------------------
 # Parameter Processing (Flags or Positional Arguments)
 # ------------------------------------------------------------------
 if [ "$#" -gt 0 ]; then
@@ -375,6 +410,9 @@ if [ "$#" -gt 0 ]; then
         -t|--timezone)      TIMEZONE="$2"; shift 2 ;;
         -a|--allow-ports)   ALLOW_PORTS="$2"; shift 2 ;;
         --skip-upgrade)     SKIP_UPGRADE=true; shift 1 ;;
+        --password-hash)    PASSWORD_HASH="$2"; shift 2 ;;
+        --safety-timer)     SAFETY_TIMER=true; shift 1 ;;
+        --no-safety-timer)  SAFETY_TIMER=false; shift 1 ;;
         --dry-run)          DRY_RUN=true; shift 1 ;;
         --rollback)
           DO_ROLLBACK=true
@@ -445,6 +483,7 @@ if [ -z "$NOVO_USUARIO" ] || [ -z "$CHAVE_SSH" ]; then
 
   read_input "${C_YELLOW}?${C_RESET} Custom SSH Port [${SSH_PORT}]: " INPUT_PORT "$SSH_PORT"
   SSH_PORT="$INPUT_PORT"
+  echo -e "    ${C_DIM}ℹ️  If your provider has its own firewall (Hetzner, AWS, DigitalOcean...), allow ${SSH_PORT}/tcp there too.${C_RESET}"
 
   read_input "${C_YELLOW}?${C_RESET} Server Timezone [${TIMEZONE}]: " INPUT_TZ "$TIMEZONE"
   TIMEZONE="$INPUT_TZ"
@@ -536,6 +575,40 @@ if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1024 ] || [ "$SSH_PORT" 
   exit 1
 fi
 
+# 4. Password hash validation (crypt format: $6$..., $y$..., $5$..., $2b$...)
+if [ -n "$PASSWORD_HASH" ] && ! [[ "$PASSWORD_HASH" =~ ^\$[0-9a-z]+\$[./0-9A-Za-z$=,]+$ ]]; then
+  log_error "Invalid --password-hash: expected a crypt hash such as '\$6\$...' (never a plain-text password)."
+  echo "    Generate one with: openssl passwd -6" >&2
+  exit 1
+fi
+
+# 5. The admin account needs a password for sudo. Without a TTY or with -y, it must come from --password-hash.
+ADMIN_NEEDS_PASSWORD=false
+if ! id "$NOVO_USUARIO" &>/dev/null || [[ "$(passwd -S "$NOVO_USUARIO" 2>/dev/null | awk '{print $2}' || echo L)" =~ ^(L|NP)$ ]]; then
+  ADMIN_NEEDS_PASSWORD=true
+fi
+if [ "$ADMIN_NEEDS_PASSWORD" = true ] && [ -z "$PASSWORD_HASH" ]; then
+  if [ "$ASSUME_YES" = true ] || ! { : < /dev/tty; } 2>/dev/null; then
+    if [ "$DRY_RUN" = true ]; then
+      log_warn "User '${NOVO_USUARIO}' has no password: a real non-interactive run requires --password-hash."
+    else
+      log_error "User '${NOVO_USUARIO}' has no password and none can be asked interactively (-y or no terminal)."
+      echo "    Pass a crypt hash for the sudo password: --password-hash \"\$(openssl passwd -6)\"" >&2
+      echo "    No changes were made to the system." >&2
+      exit 1
+    fi
+  fi
+fi
+
+# 6. Safety timer default: on for interactive runs, off with -y (nobody is there to confirm)
+if [ "$SAFETY_TIMER" = auto ]; then
+  if [ "$ASSUME_YES" = true ]; then
+    SAFETY_TIMER=false
+  else
+    SAFETY_TIMER=true
+  fi
+fi
+
 # ------------------------------------------------------------------
 # Plan Confirmation
 # ------------------------------------------------------------------
@@ -554,10 +627,17 @@ else
   echo -e "  SSH Login Alert:   ${C_YELLOW}Not Configured (Optional — active only if Telegram or Webhook is provided)${C_RESET}"
 fi
 echo -e "  Lynis Audit Scan:  ${C_GREEN}${RUN_AUDIT}${C_RESET}"
+if [ "$SAFETY_TIMER" = true ]; then
+  echo -e "  Safety Timer:      ${C_GREEN}auto-revert in ${SAFETY_TIMER_MINUTES} min unless you confirm the new SSH login${C_RESET}"
+else
+  echo -e "  Safety Timer:      ${C_YELLOW}disabled${C_RESET}"
+fi
 if [ "$DRY_RUN" = true ]; then
   echo -e "  Execution Mode:    ${C_YELLOW}${C_BOLD}DRY-RUN (SIMULATION ONLY)${C_RESET}"
 fi
 echo -e "${C_BOLD}----------------------------${C_RESET}"
+echo ""
+log_warn "Make sure port ${C_BOLD}${SSH_PORT}/tcp${C_RESET} is also allowed in your provider's firewall (Hetzner Cloud Firewall, AWS Security Group, DigitalOcean Cloud Firewall, etc.)."
 
 echo ""
 
@@ -831,7 +911,10 @@ else
 
   # Set password if account is locked or has no password (required for sudo)
   PASSWD_STATUS="$(passwd -S "$NOVO_USUARIO" 2>/dev/null | awk '{print $2}' || echo "L")"
-  if [[ "$PASSWD_STATUS" =~ ^(L|NP)$ ]]; then
+  if [[ "$PASSWD_STATUS" =~ ^(L|NP)$ ]] && [ -n "$PASSWORD_HASH" ]; then
+    usermod -p "$PASSWORD_HASH" "$NOVO_USUARIO"
+    log_success "Sudo password for '${NOVO_USUARIO}' set from --password-hash."
+  elif [[ "$PASSWD_STATUS" =~ ^(L|NP)$ ]]; then
     echo ""
     log_warn "ATTENTION: Set the password for '${NOVO_USUARIO}' (required for sudo):"
     if { : < /dev/tty; } 2>/dev/null; then
@@ -962,6 +1045,15 @@ EOF
   log_success "SSH configuration syntax is valid."
 
   log_step "3.5 Resolving socket activation (Ubuntu 22.10+) and restarting SSH..."
+  # If UFW is already active, open the new port before sshd moves to it
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw limit "$SSH_PORT"/tcp comment 'SSH Hardened Port' >/dev/null
+    log_info "UFW already active: opened ${SSH_PORT}/tcp before restarting SSH."
+  fi
+  if [ "$SAFETY_TIMER" = true ]; then
+    # Generous window covering the remaining phases; reset to SAFETY_TIMER_MINUTES at the end
+    arm_safety_timer 60
+  fi
   systemctl disable --now ssh.socket 2>/dev/null || true
   systemctl enable ssh.service >/dev/null 2>&1 || true
   systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service
@@ -1586,3 +1678,34 @@ fi
 echo -e "    - /home/*/.ssh/authorized_keys.disabled (disabled default provider keys)"
 echo ""
 echo -e "${C_BOLD}==============================================================================${C_RESET}"
+
+# ==================================================================
+# SAFETY TIMER CONFIRMATION
+# ==================================================================
+if [ "$SAFETY_TIMER_ARMED" = true ]; then
+  # Fresh window from now, so the user has the full time to test the new login
+  arm_safety_timer "$SAFETY_TIMER_MINUTES"
+fi
+if [ "$SAFETY_TIMER_ARMED" = true ]; then
+  echo ""
+  echo -e "${C_YELLOW}${C_BOLD}  ⏱️  SAFETY TIMER ACTIVE — the system will be rolled back automatically in ${SAFETY_TIMER_MINUTES} minute(s).${C_RESET}"
+  echo -e "  1) Test the login in a ${C_BOLD}NEW terminal${C_RESET} (Step 1 above)."
+  echo -e "  2) If it works, type ${C_BOLD}CONFIRM${C_RESET} below to keep the hardening."
+  echo -e "  ${C_DIM}You can also confirm later with: sudo systemctl stop ${SAFETY_TIMER_UNIT}.timer${C_RESET}"
+  echo ""
+  while true; do
+    CONFIRM_TIMER=""
+    read_input "${C_YELLOW}?${C_RESET} Type CONFIRM to keep the changes (Enter = leave timer running): " CONFIRM_TIMER ""
+    if [ "${CONFIRM_TIMER^^}" = "CONFIRM" ]; then
+      disarm_safety_timer
+      log_success "Safety timer cancelled. Hardening is now permanent."
+      break
+    elif [ -z "$CONFIRM_TIMER" ]; then
+      log_warn "Timer still running: automatic rollback at $(date -d "+${SAFETY_TIMER_MINUTES} min" +%H:%M) unless you run 'sudo systemctl stop ${SAFETY_TIMER_UNIT}.timer'."
+      break
+    else
+      log_warn "Please type exactly CONFIRM (or press Enter to leave the timer running)."
+    fi
+  done
+  echo ""
+fi

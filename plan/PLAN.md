@@ -132,22 +132,22 @@ Gravar `hardening_backup_<ts>.state` (formato `chave=valor`) com:
 
 ## Etapa 4 — Proteção contra lockout e modo não interativo (#7)
 
-### [ ] 4.1 Bug novo: `-y` ainda pede senha
+### [x] 4.1 Bug novo: `-y` ainda pede senha
 - **Onde:** `hardening.sh:732-743`. Com `-y`, o `passwd` interativo continua sendo chamado se a conta estiver sem senha, o que trava automações (cloud-init, CI).
 - **Correção:** aceitar `--password-hash '<hash>'` (ou a variável `HARDENING_PASSWORD_HASH`) e aplicar com `usermod -p`. Com `-y` e sem hash, abortar antes de qualquer mudança com uma mensagem clara.
   - **Decisão necessária:** outra opção seria `--nopasswd-sudo`, que cria `/etc/sudoers.d/<user>` com `NOPASSWD`. É mais prático, mas menos seguro.
 
-### [ ] 4.2 Abrir a porta no UFW antes de reiniciar o SSH
+### [x] 4.2 Abrir a porta no UFW antes de reiniciar o SSH
 - **Problema:** se o UFW já estiver ativo (imagens de alguns provedores), a Fase 3 move o SSH para a porta nova antes de a Fase 4 liberá-la.
 - **Correção:** na Fase 3, antes do `systemctl restart` (`hardening.sh:865`), se `ufw status` estiver `active`, rodar `ufw limit "$SSH_PORT"/tcp`.
 
-### [ ] 4.3 Timer de reversão automática
+### [x] 4.3 Timer de reversão automática
 - Antes de reiniciar o SSH na Fase 3, agendar com `systemd-run --unit=vps-hardening-autorevert --on-active=10min /usr/local/sbin/hardening-rollback --yes`.
 - No fim do script: “Teste o login num NOVO terminal e digite `CONFIRMO` aqui (ou rode `sudo systemctl stop vps-hardening-autorevert.timer`)”. Ao confirmar, o timer é parado.
 - Flag `--no-safety-timer` para desligar.
 - **Decisão necessária:** comportamento padrão com `-y` (ver “Decisões”).
 
-### [ ] 4.4 Aviso sobre o firewall do provedor
+### [x] 4.4 Aviso sobre o firewall do provedor
 - No wizard, no resumo antes da confirmação e no resumo final: “Libere a porta `$SSH_PORT/tcp` também no firewall do provedor (Hetzner Cloud Firewall, AWS Security Group, DigitalOcean Cloud Firewall, etc.)”.
 
 **Testes:**
