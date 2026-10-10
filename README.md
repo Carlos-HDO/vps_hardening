@@ -44,7 +44,7 @@ Clone the repository directly onto the VPS and run:
 ```bash
 git clone https://github.com/carlos-hdo/vps_hardening.git
 cd vps_hardening
-chmod +x hardening.sh
+git checkout v1.0.0          # pin a released version (optional, recommended)
 sudo ./hardening.sh
 ```
 
@@ -77,14 +77,25 @@ sudo ./hardening.sh -u operator -k "gh:carlos-hdo" -p 52211 -a 80,443 -y
 
 ### 3. Via Direct Shell Pipe (Curl / Web Bootstrap)
 
-To execute remotely without prior cloning:
+`quick-install.sh` downloads a **tagged release**, checks it against the release `SHA256SUMS` and only then runs `hardening.sh` (input is read from `/dev/tty`, so the wizard works over a pipe):
 
 ```bash
-# Interactive mode (safely reads inputs from /dev/tty even over pipes):
-curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main/hardening.sh | sudo bash
+# Interactive wizard
+curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.0/quick-install.sh | sudo bash
 
-# Non-interactive mode with arguments passed through bash:
-curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main/hardening.sh | sudo bash -s -- operator "gh:carlos-hdo" 52211
+# Non-interactive, arguments passed through to hardening.sh
+curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.0/quick-install.sh \
+  | sudo bash -s -- -u operator -k "gh:carlos-hdo" -p 52211 --password-hash '<hash>' -y
+```
+
+`VPS_HARDENING_REF` selects another release tag. For untagged code (e.g. `main`) there is no `SHA256SUMS`; set `VPS_HARDENING_SKIP_CHECKSUM=1` only if you accept running unverified code.
+
+To verify the installer itself before running it:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v1.0.0/quick-install.sh
+curl -fsSLO https://github.com/carlos-hdo/vps_hardening/releases/download/v1.0.0/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS && sudo bash quick-install.sh
 ```
 
 ---
@@ -110,6 +121,7 @@ curl -fsSL https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main/harde
 | `--audit`, `--lynis` | None | `false` | Run automated Lynis security baseline audit after hardening |
 | `--no-verify` | None | `false` | Skip automatic post-hardening verification test suite |
 | `-y`, `--yes` | None | `false` | Skip interactive plan confirmation prompt |
+| `-V`, `--version` | None | — | Print the version and exit |
 | `-h`, `--help` | None | — | Display help message and options |
 
 Environment variables can replace most flags (useful for automation): `HARDENING_USER`, `HARDENING_SSH_KEY`, `HARDENING_SSH_PORT`, `HARDENING_TIMEZONE`, `HARDENING_ALLOW_PORTS`, `HARDENING_PASSWORD_HASH`, `HARDENING_TG_TOKEN`, `HARDENING_TG_CHAT_ID`, `HARDENING_WEBHOOK_URL`, `HARDENING_RUN_AUDIT`, `HARDENING_SKIP_UPGRADE`, `HARDENING_SAFETY_TIMER` (`true`/`false`) and `HARDENING_SAFETY_TIMER_MINUTES` (default `10`).
@@ -304,7 +316,8 @@ sudo fail2ban-client set sshd unbanip YOUR_IP
 vps_hardening/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                # CI: ShellCheck, config drift, dry-run matrix, E2E on Ubuntu runners
+│       ├── ci.yml                # CI: ShellCheck, config drift, dry-run matrix, E2E on Ubuntu runners
+│       └── release.yml           # Tag v*: publish release assets + SHA256SUMS
 ├── hardening.sh                  # Main hardening and automation script
 ├── verify.sh                     # Automated test & verification audit suite (Phases 1-11)
 ├── rollback.sh                   # Rollback utility (installed as hardening-rollback)
@@ -312,6 +325,7 @@ vps_hardening/
 ├── GUIDE.md                      # Technical in-depth reference guide (Phases 1-11)
 ├── README.md                     # Documentation and usage guide
 ├── SECURITY.md                   # How to report vulnerabilities
+├── CHANGELOG.md                  # Release history
 ├── LICENSE                       # MIT License
 ├── plan/
 │   └── PLAN.md                   # Remediation plan and its status

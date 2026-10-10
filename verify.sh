@@ -16,6 +16,8 @@
 
 set -uo pipefail
 
+VERSION="1.0.0"
+
 # Terminal colors and formatting
 C_RESET="\033[0m"
 C_RED="\033[1;31m"
@@ -50,6 +52,10 @@ while [[ $# -gt 0 ]]; do
       # Accepted for compatibility with older hardening.sh versions (no-op)
       shift
       ;;
+    -V|--version)
+      echo "vps_hardening verify ${VERSION}"
+      exit 0
+      ;;
     -h|--help)
       cat <<EOF
 Usage: sudo $0 [options]
@@ -58,6 +64,7 @@ Options:
   -p, --port <port>       Target SSH port (default: auto-detected or 52211)
   -u, --user <username>   Target admin username (default: auto-detected)
   --embedded              Accepted for compatibility (no effect)
+  -V, --version           Print the version and exit
   -h, --help              Display this help message
 EOF
       exit 0
@@ -179,7 +186,7 @@ if [ -z "$TARGET_USER" ]; then
 fi
 
 echo -e "${C_BOLD}==============================================================================${C_RESET}"
-echo -e "${C_BOLD}${C_GREEN}             VPS HARDENING SECURITY VERIFICATION SUITE                        ${C_RESET}"
+echo -e "${C_BOLD}${C_GREEN}             VPS HARDENING SECURITY VERIFICATION SUITE  ${C_RESET}${C_DIM}v${VERSION}${C_RESET}"
 echo -e "${C_BOLD}==============================================================================${C_RESET}"
 echo -e "  ${C_DIM}Host:${C_RESET} $(hostname) | ${C_DIM}OS:${C_RESET} $(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '\"' || uname -s) | ${C_DIM}Virt:${C_RESET} ${VIRT_ENV}"
 echo -e "  ${C_DIM}Target Port:${C_RESET} ${TARGET_PORT} | ${C_DIM}Admin User:${C_RESET} ${TARGET_USER}"

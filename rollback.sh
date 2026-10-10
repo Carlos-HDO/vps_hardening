@@ -15,6 +15,8 @@
 
 set -uo pipefail
 
+VERSION="1.0.0"
+
 C_RESET="\033[0m"
 C_RED="\033[1;31m"
 C_GREEN="\033[1;32m"
@@ -43,6 +45,7 @@ Arguments:
 
 Options:
   -y, --yes        Do not ask for confirmation
+  -V, --version    Print the version and exit
   -h, --help       Display this help message
 EOF
   exit 0
@@ -52,6 +55,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     -y|--yes)  ASSUME_YES=true; shift ;;
     -h|--help) show_help ;;
+    -V|--version) echo "vps_hardening rollback ${VERSION}"; exit 0 ;;
     -*)        log_error "Unknown parameter: $1"; echo "Run '$0 --help' for usage." >&2; exit 1 ;;
     *)         TARGET_BACKUP="$1"; shift ;;
   esac

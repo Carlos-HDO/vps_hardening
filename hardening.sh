@@ -18,6 +18,8 @@
 
 set -euo pipefail
 
+VERSION="1.0.0"
+
 # Environment variables to avoid interactive package prompts
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
@@ -39,7 +41,8 @@ log_warn()    { echo -e "${C_YELLOW}[!]${C_RESET} $*"; }
 log_error()   { echo -e "${C_RED}[-] ERROR:${C_RESET} $*" >&2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" &>/dev/null && pwd || true)"
-REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/carlos-hdo/vps_hardening/main}"
+# Helper scripts are fetched from the release matching this script (used only when not running from a clone)
+REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/carlos-hdo/vps_hardening/v${VERSION}}"
 
 # Helper function for safe terminal input (even when piped from `curl ... | bash`)
 read_input() {
@@ -86,6 +89,7 @@ Options:
   --audit, --lynis            Run Lynis security audit scan after hardening
   --no-verify                 Skip automatic post-hardening verification tests
   -y, --yes                   Skip interactive confirmation prompt
+  -V, --version               Print the version and exit
   -h, --help                  Display this help message
 
 Examples:
@@ -101,6 +105,9 @@ EOF
 for arg in "$@"; do
   if [ "$arg" = "-h" ] || [ "$arg" = "--help" ]; then
     show_help
+  elif [ "$arg" = "-V" ] || [ "$arg" = "--version" ]; then
+    echo "vps_hardening ${VERSION}"
+    exit 0
   fi
 done
 
@@ -452,7 +459,7 @@ fi
 # ------------------------------------------------------------------
 if [ -z "$NOVO_USUARIO" ] || [ -z "$CHAVE_SSH" ]; then
   echo -e "${C_BOLD}==========================================================${C_RESET}"
-  echo -e "${C_CYAN}${C_BOLD}          VPS HARDENING CONFIGURATION WIZARD${C_RESET}"
+  echo -e "${C_CYAN}${C_BOLD}          VPS HARDENING CONFIGURATION WIZARD${C_RESET} ${C_DIM}v${VERSION}${C_RESET}"
   echo -e "${C_BOLD}==========================================================${C_RESET}"
   echo ""
 
@@ -613,7 +620,7 @@ fi
 # Plan Confirmation
 # ------------------------------------------------------------------
 echo ""
-echo -e "${C_BOLD}--- Hardening Parameters ---${C_RESET}"
+echo -e "${C_BOLD}--- Hardening Parameters (vps_hardening v${VERSION}) ---${C_RESET}"
 echo -e "  New User:          ${C_GREEN}${NOVO_USUARIO}${C_RESET}"
 echo -e "  SSH Public Key:    ${C_GREEN}${CHAVE_SSH:0:40}...${C_RESET}"
 echo -e "  New SSH Port:      ${C_GREEN}${SSH_PORT}${C_RESET}"

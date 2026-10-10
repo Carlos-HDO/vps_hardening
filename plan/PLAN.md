@@ -1,7 +1,7 @@
 # Plano de Correção — vps_hardening
 
 > Criado em 2026-10-10 a partir da revisão de `hardening.sh`, `rollback.sh`, `verify.sh`, `configs/` e CI.
-> Status: **pendente**. Marque cada item com `[x]` ao concluir.
+> Status: **implementado em 2026-10-10** (Etapas 1–8, um commit por etapa). Pendências externas na seção “Critério de pronto”.
 
 ## Ordem de execução
 
@@ -214,21 +214,22 @@ Gravar `hardening_backup_<ts>.state` (formato `chave=valor`) com:
 
 ## Etapa 8 — Release e integridade
 
-- [ ] **8.1** Adicionar `VERSION="x.y.z"` no topo do `hardening.sh` e do `verify.sh`, mais a flag `--version`. Mostrar a versão no cabeçalho do wizard e no resumo.
-- [ ] **8.2** Criar `CHANGELOG.md` (formato Keep a Changelog), começando pela versão que fecha este plano.
-- [ ] **8.3** Workflow de release: em cada tag `v*`, gerar `SHA256SUMS` dos scripts e anexar ao GitHub Release.
-- [ ] **8.4** `quick-install.sh` e o README passam a apontar para uma **tag** (`/v1.0.0/`) em vez de `main`, e o `quick-install.sh` valida os arquivos com `sha256sum -c` antes de executar.
+- [x] **8.1** Adicionar `VERSION="x.y.z"` no topo do `hardening.sh` e do `verify.sh`, mais a flag `--version`. Mostrar a versão no cabeçalho do wizard e no resumo.
+- [x] **8.2** Criar `CHANGELOG.md` (formato Keep a Changelog), começando pela versão que fecha este plano.
+- [x] **8.3** Workflow de release: em cada tag `v*`, gerar `SHA256SUMS` dos scripts e anexar ao GitHub Release.
+- [x] **8.4** `quick-install.sh` e o README passam a apontar para uma **tag** (`/v1.0.0/`) em vez de `main`, e o `quick-install.sh` valida os arquivos com `sha256sum -c` antes de executar.
 
 ---
 
-## Decisões pendentes (precisam de resposta antes da etapa correspondente)
+## Decisões tomadas
 
-1. **Etapa 3, snapshot `latest`:** apontar para o snapshot mais antigo (o estado original de verdade) ou criar um snapshot só na primeira execução? *Recomendação:* criar só na primeira execução e guardar os outros como `hardening_backup_<ts>.tar.gz` sem mexer no `latest`.
-2. **Etapa 4.1, senha no modo `-y`:** `--password-hash` (recomendado), `--nopasswd-sudo`, ou os dois?
-3. **Etapa 4.3, timer de reversão com `-y`:** *Recomendação:* ligado por padrão no modo interativo e desligado com `-y` (automações não têm quem confirme), podendo ser ativado com `--safety-timer`.
+1. **Etapa 3, snapshot:** criado só na primeira execução; `latest.tar.gz` sempre aponta para o estado original e execuções seguintes o mantêm.
+2. **Etapa 4.1, senha no modo `-y`:** `--password-hash` (hash crypt, ex.: `openssl passwd -6`). Sem ele, com `-y` ou sem terminal, a execução aborta antes de qualquer mudança.
+3. **Etapa 4.3, timer de reversão:** ligado por padrão no modo interativo, desligado com `-y`; `--safety-timer` / `--no-safety-timer` sobrescrevem.
 
 ## Critério de pronto
 
-- Todos os itens marcados.
-- CI verde: lint, drift, matriz de dry-run e E2E em 22.04/24.04.
-- Teste manual numa VPS real (Debian 12 e Ubuntu 24.04): hardening → login na porta nova → rollback → login na porta 22.
+- [x] Todos os itens marcados.
+- [ ] CI verde: lint, drift, matriz de dry-run e E2E em 22.04/24.04. *(o E2E só roda depois do push/PR)*
+- [ ] Teste manual numa VPS real (Debian 12 e Ubuntu 24.04): hardening → login na porta nova → rollback → login na porta 22. *(validado localmente em containers systemd; sysctl, `/dev/shm` e auditd não puderam ser exercitados em container)*
+- [ ] Criar e publicar a tag `v1.0.0` depois do merge na `main` (`git tag v1.0.0 && git push origin v1.0.0`). Até lá, as URLs fixadas em `v1.0.0` (quick-install, downloads de helpers no modo `curl | bash`) retornam 404.
