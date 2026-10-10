@@ -196,7 +196,7 @@ Gravar `hardening_backup_<ts>.state` (formato `chave=valor`) com:
   4. `sudo ./rollback.sh --yes`, depois validar que o SSH volta para a 22 e que os arquivos do manifesto sumiram.
   5. Rodar o hardening duas vezes seguidas para validar a idempotência e o caso do `LYNIS_SCORE`.
 - A matriz de dry-run em containers continua cobrindo Debian 11/12.
-- ⚠️ O job E2E ainda não rodou no GitHub (a branch não foi enviada). O mesmo fluxo foi validado localmente em containers systemd Debian 12 / Ubuntu 24.04.
+- ✅ O job E2E passou no GitHub (PR #1) em ubuntu-22.04 e ubuntu-24.04.
 
 ---
 
@@ -230,6 +230,6 @@ Gravar `hardening_backup_<ts>.state` (formato `chave=valor`) com:
 ## Critério de pronto
 
 - [x] Todos os itens marcados.
-- [ ] CI verde: lint, drift, matriz de dry-run e E2E em 22.04/24.04. *(o E2E só roda depois do push/PR)*
+- [x] CI verde: lint, drift, matriz de dry-run (Ubuntu 20.04/22.04/24.04, Debian 12/13) e E2E em 22.04/24.04. *(PR #1)*
 - [ ] Teste manual numa VPS real (Debian 12 e Ubuntu 24.04): hardening → login na porta nova → rollback → login na porta 22. *(validado localmente em containers systemd; sysctl, `/dev/shm` e auditd não puderam ser exercitados em container)*
 - [ ] Criar e publicar a tag `v1.0.0` depois do merge na `main` (`git tag v1.0.0 && git push origin v1.0.0`). Até lá, as URLs fixadas em `v1.0.0` (quick-install, downloads de helpers no modo `curl | bash`) retornam 404.
